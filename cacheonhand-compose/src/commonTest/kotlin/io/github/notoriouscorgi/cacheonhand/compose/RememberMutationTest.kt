@@ -6,7 +6,7 @@ import dev.mokkery.spy
 import dev.mokkery.verify
 import dev.mokkery.verify.VerifyMode.Companion.not
 import io.github.notoriouscorgi.cacheonhand.operations.FetchState
-import io.github.notoriouscorgi.composetesttools.renderHook
+import io.github.notoriouscorgi.cacheonhand.compose.renderHook
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import kotlin.test.BeforeTest
@@ -42,7 +42,7 @@ class RememberMutationTest {
             composeCache.clear()
             val result by renderHook { rememberMutationWithInput() }
 
-            actAndSettleSuspend { result?.mutate?.invoke(FakeMutationInput(3), null, null, null) }
+            actAndSettle { result?.mutate?.invoke(FakeMutationInput(3), null, null, null) }
 
             assertEquals(FetchState.SUCCESS, result?.fetchState)
             assertEquals(5, result?.data)
@@ -55,7 +55,7 @@ class RememberMutationTest {
             composeCache.clear()
             val result by renderHook { rememberMutationWithInput() }
 
-            actAndSettleSuspend { result?.mutate?.invoke(FakeMutationInput(3, isError = true), null, null, null) }
+            actAndSettle { result?.mutate?.invoke(FakeMutationInput(3, isError = true), null, null, null) }
 
             assertEquals(FetchState.ERROR, result?.fetchState)
             assertNotNull(result?.error)
@@ -68,7 +68,7 @@ class RememberMutationTest {
             composeCache.clear()
             val result by renderHook { rememberMutationNoInput() }
 
-            actAndSettleSuspend { result?.mutate?.invoke(null, null, null) }
+            actAndSettle { result?.mutate?.invoke(null, null, null) }
 
             assertEquals(FetchState.SUCCESS, result?.fetchState)
             assertEquals(2, result?.data)
@@ -81,7 +81,7 @@ class RememberMutationTest {
             composeMutationError = true
             val result by renderHook { rememberMutationNoInput() }
 
-            actAndSettleSuspend { result?.mutate?.invoke(null, null, null) }
+            actAndSettle { result?.mutate?.invoke(null, null, null) }
 
             assertEquals(FetchState.ERROR, result?.fetchState)
             assertNotNull(result?.error)
@@ -93,7 +93,7 @@ class RememberMutationTest {
             composeCache.clear()
             val result by renderHook { rememberFireAndForgetMutation() }
 
-            actAndSettleSuspend { result?.mutate?.invoke(FakeMutationInput(3), null, null, null) }
+            actAndSettle { result?.mutate?.invoke(FakeMutationInput(3), null, null, null) }
 
             assertEquals(FetchState.SUCCESS, result?.fetchState)
             assertNull(result?.error)
@@ -105,7 +105,7 @@ class RememberMutationTest {
             composeCache.clear()
             val result by renderHook { rememberFireAndForgetMutation() }
 
-            actAndSettleSuspend { result?.mutate?.invoke(FakeMutationInput(3, isError = true), null, null, null) }
+            actAndSettle { result?.mutate?.invoke(FakeMutationInput(3, isError = true), null, null, null) }
 
             assertEquals(FetchState.ERROR, result?.fetchState)
             assertNotNull(result?.error)
@@ -119,7 +119,7 @@ class RememberMutationTest {
             val onError = spy({ _: Exception -> })
             val result by renderHook { rememberMutationWithInput() }
 
-            actAndSettleSuspend {
+            actAndSettle {
                 result?.mutate?.invoke(FakeMutationInput(3), null, onSuccess, onError)
             }
 
@@ -136,7 +136,7 @@ class RememberMutationTest {
             val onError = spy({ _: Exception -> })
             val result by renderHook { rememberMutationWithInput() }
 
-            actAndSettleSuspend {
+            actAndSettle {
                 result?.mutate?.invoke(FakeMutationInput(3, isError = true), null, onSuccess, onError)
             }
 
@@ -153,7 +153,7 @@ class RememberMutationTest {
             composeCache[FakeInput(3, false)] = 7
             val result by renderHook { rememberMutationWithInput() }
 
-            actAndSettleSuspend {
+            actAndSettle {
                 result?.mutate?.invoke(
                     FakeMutationInput(3),
                     { _ ->
@@ -182,7 +182,7 @@ class RememberMutationTest {
                 composeQueryFactoryOf(composeQueryFactoryWithInput)(FakeInput(10), launchImmediately = false)
             }
 
-            actAndSettleSuspend {
+            actAndSettle {
                 result?.mutate?.invoke(
                     FakeMutationInput(3),
                     null,
@@ -209,7 +209,7 @@ class RememberMutationTest {
             composeCache[FakeInput(3, false)] = 7
             val result by renderHook { rememberMutationWithInput() }
 
-            actAndSettleSuspend {
+            actAndSettle {
                 result?.mutate?.invoke(
                     FakeMutationInput(3, isError = true),
                     { _ -> mapOf(FakeInput(3, false) to 99) },

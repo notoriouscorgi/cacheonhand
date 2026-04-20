@@ -6,7 +6,6 @@ android-minSdk = "24"
 android-compileSdk = "36"
 composeMultiplatform = "1.10.0"
 coroutines = "1.10.2"
-composetesttools = "v0.1.0"
 dokka = "2.2.0"
 
 [libraries]
@@ -16,7 +15,6 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "composeMultiplatform" }
 compose-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "composeMultiplatform" }
 compose-ui-test = { module = "org.jetbrains.compose.ui:ui-test", version.ref = "composeMultiplatform" }
-composetesttools = { module = "io.github.notoriouscorgi:composetesttools", version.ref = "composetesttools" }
 atomicfu = { module = "org.jetbrains.kotlinx:atomicfu", version.ref = "atomicfu" }
 
 [plugins]

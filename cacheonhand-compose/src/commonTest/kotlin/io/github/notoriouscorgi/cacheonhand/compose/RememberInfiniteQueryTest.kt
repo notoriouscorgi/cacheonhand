@@ -11,7 +11,7 @@ import io.github.notoriouscorgi.cacheonhand.operations.CacheAndFetchState
 import io.github.notoriouscorgi.cacheonhand.operations.FetchState
 import io.github.notoriouscorgi.cacheonhand.operations.cachedDataState
 import io.github.notoriouscorgi.cacheonhand.operations.PagedData
-import io.github.notoriouscorgi.composetesttools.renderHook
+import io.github.notoriouscorgi.cacheonhand.compose.renderHook
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import kotlin.test.BeforeTest
@@ -66,11 +66,11 @@ class RememberInfiniteQueryTest {
             }
 
             // Manually fetch first page
-            actAndSettleSuspend { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
+            actAndSettle { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
             assertEquals(listOf(PagedData<Int?, Int>(1, 3)), result?.data)
 
             // Fetch second page
-            actAndSettleSuspend { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
+            actAndSettle { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
             assertEquals(
                 listOf(PagedData<Int?, Int>(1, 3), PagedData<Int?, Int>(2, 6)),
                 result?.data,
@@ -85,8 +85,8 @@ class RememberInfiniteQueryTest {
                 rememberInfiniteQueryWithInput(FakePageInput(3), launchImmediately = false)
             }
 
-            actAndSettleSuspend { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
-            actAndSettleSuspend { result?.fetchPreviousPage?.invoke(FakePageInput(3), null, null) }
+            actAndSettle { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
+            actAndSettle { result?.fetchPreviousPage?.invoke(FakePageInput(3), null, null) }
 
             assertEquals(
                 listOf(PagedData<Int?, Int>(0, 0), PagedData<Int?, Int>(1, 3)),
@@ -126,8 +126,8 @@ class RememberInfiniteQueryTest {
                 rememberInfiniteQueryNoInput(launchImmediately = false)
             }
 
-            actAndSettleSuspend { result?.fetchNextPage?.invoke(null, null) }
-            actAndSettleSuspend { result?.fetchNextPage?.invoke(null, null) }
+            actAndSettle { result?.fetchNextPage?.invoke(null, null) }
+            actAndSettle { result?.fetchNextPage?.invoke(null, null) }
 
             assertEquals(
                 listOf(PagedData<Int?, Int>(1, 10), PagedData<Int?, Int>(2, 20)),
@@ -164,10 +164,10 @@ class RememberInfiniteQueryTest {
                 rememberInfiniteQueryWithInput(FakePageInput(3), launchImmediately = false)
             }
 
-            actAndSettleSuspend {
+            actAndSettle {
                 result?.fetchNextPage?.invoke(FakePageInput(3), onSuccess, null)
             }
-            actAndSettleSuspend {
+            actAndSettle {
                 result?.fetchNextPage?.invoke(FakePageInput(3), onSuccess, null)
             }
 
@@ -209,12 +209,12 @@ class RememberInfiniteQueryTest {
             assertEquals(false, result?.hasPreviousPage)
 
             // Fetch page 1 — getPreviousPageParam returns Value(0) since 1-1=0 >= 0
-            actAndSettleSuspend { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
+            actAndSettle { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
             assertEquals(true, result?.hasNextPage)
             assertEquals(true, result?.hasPreviousPage)
 
             // Fetch previous page (0) — getPreviousPageParam returns None since 0-1=-1 < 0
-            actAndSettleSuspend { result?.fetchPreviousPage?.invoke(FakePageInput(3), null, null) }
+            actAndSettle { result?.fetchPreviousPage?.invoke(FakePageInput(3), null, null) }
             assertEquals(true, result?.hasNextPage)
             assertEquals(false, result?.hasPreviousPage)
         }
@@ -227,7 +227,7 @@ class RememberInfiniteQueryTest {
                 rememberInfiniteQueryWithInput(FakePageInput(3, isError = true), launchImmediately = false)
             }
 
-            actAndSettleSuspend { result?.fetchNextPage?.invoke(FakePageInput(3, isError = true), null, null) }
+            actAndSettle { result?.fetchNextPage?.invoke(FakePageInput(3, isError = true), null, null) }
 
             assertEquals(FetchState.ERROR, result?.fetchState)
             assertNotNull(result?.error)
@@ -290,15 +290,15 @@ class RememberInfiniteQueryTest {
             }
 
             // Fetch pages 1 and 2
-            actAndSettleSuspend { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
-            actAndSettleSuspend { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
+            actAndSettle { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
+            actAndSettle { result?.fetchNextPage?.invoke(FakePageInput(3), null, null) }
             assertEquals(
                 listOf(PagedData<Int?, Int>(1, 3), PagedData<Int?, Int>(2, 6)),
                 result?.data,
             )
 
             // Re-fetch page 1 with value=5 → data = 5*1 = 5
-            actAndSettleSuspend { result?.fetchPage?.invoke(FakePageInput(5), 1, null, null) }
+            actAndSettle { result?.fetchPage?.invoke(FakePageInput(5), 1, null, null) }
             assertEquals(
                 listOf(PagedData<Int?, Int>(1, 5), PagedData<Int?, Int>(2, 6)),
                 result?.data,

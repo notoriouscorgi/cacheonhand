@@ -10,7 +10,7 @@ import dev.mokkery.verify.VerifyMode.Companion.not
 import io.github.notoriouscorgi.cacheonhand.operations.CacheAndFetchState
 import io.github.notoriouscorgi.cacheonhand.operations.FetchState
 import io.github.notoriouscorgi.cacheonhand.operations.cachedDataState
-import io.github.notoriouscorgi.composetesttools.renderHook
+import io.github.notoriouscorgi.cacheonhand.compose.renderHook
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import kotlin.test.BeforeTest

@@ -62,7 +62,6 @@ kotlin {
             implementation(libs.compose.runtime)
             implementation(libs.compose.ui)
             implementation(libs.compose.ui.test)
-            implementation(libs.composetesttools)
         }
 
         jvmTest.dependencies {
