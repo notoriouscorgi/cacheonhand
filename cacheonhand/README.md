@@ -1,6 +1,7 @@
 # Cache On Hand
 
-A thread-safe, reactive in-memory cache with TTL support for Kotlin Multiplatform.
+A thread-safe, reactive in-memory cache with TTL support for Kotlin Multiplatform. If you only want
+transactional optimistic updates, use this alone.
 
 ## Installation
 
@@ -101,7 +102,8 @@ cache.updateWithRollback(
 
 #### TTL and Eviction
 
-Entries with TTL are lazily evicted on the next read after expiry. A background eviction sweep also runs on each `get()` call to clean up stale entries across the cache.
+Entries with TTL are lazily evicted on the next read after expiry. A background eviction sweep also runs on each `get()`
+call to clean up stale entries across the cache.
 
 ```kotlin
 cache.setWithTtl(key, value, 30.seconds)
@@ -118,7 +120,8 @@ cache.clear() // removes all entries, mutexes, and TTL metadata
 
 ### CacheableInput
 
-All cache keys must implement `CacheableInput` with an `identifier` property. Use the sub-interface that matches your operation type:
+All cache keys must implement `CacheableInput` with an `identifier` property. Use the sub-interface that matches your
+operation type:
 
 ```kotlin
 sealed interface CacheableInput {
@@ -130,7 +133,8 @@ sealed interface CacheableInput {
 }
 ```
 
-The `identifier` is a human-readable string describing the cache key's purpose (e.g., the API endpoint). This is useful for debugging and future codegen support.
+The `identifier` is a human-readable string describing the cache key's purpose (e.g., the API endpoint). This is useful
+for debugging.
 
 ```kotlin
 data class GetUserQuery(val userId: String) : CacheableInput.QueryInput {
@@ -155,6 +159,15 @@ data class UpdateUserMutation(val userId: String) : CacheableInput.MutationInput
 - **Ordered lock acquisition** in `updateWithRollback` prevents deadlock
 - **`MutableStateFlow.emit()`** is inherently thread-safe for value emissions
 
+### Gotchas
+
+- **`getOrNull()` is unsynchronized** — it reads directly from the map without acquiring a mutex. This is intentional for use in property initializers where `suspend` isn't available. The value may be briefly stale if a concurrent `set()` is in progress. Always follow up with a reactive `observe()` or `get()` collection for live data.
+- **Don't call `set()` inside `updateWithRollback`** — the rollback already holds per-key mutexes. Calling `set()` would deadlock. Use `setUnsafe()` internally (this is handled for you by the library).
+- **TTL eviction is lazy** — expired entries are not removed on a timer. They are evicted on the next `get()`, `getOrNull()`, or background sweep triggered by `get()`. An expired entry still occupies memory until a read triggers cleanup.
+- **`clear()` acquires the structural guard** — if another coroutine is in `ensureMutex()` or `ensureFlow()`, `clear()` will suspend until it completes. Don't call `clear()` in a tight loop.
+- **TTL entries persist in memory until read** — even after expiry, entries occupy memory until a `get()` triggers cleanup. Call `clear()` if you need to free memory for inactive keys.
+- **Flow identity** — `get()` returns the same `MutableStateFlow` instance for the same key. Multiple subscribers share the same flow.
+
 ## Testing
 
 Inject `testScheduler.timeSource` for deterministic TTL testing:
@@ -163,12 +176,12 @@ Inject `testScheduler.timeSource` for deterministic TTL testing:
 @OptIn(ExperimentalCoroutinesApi::class)
 @Test
 fun `cache entry expires after TTL`() = runTest {
-    val cache = OnHandCache(timeSource = testScheduler.timeSource)
+        val cache = OnHandCache(timeSource = testScheduler.timeSource)
 
-    cache.setWithTtl(MyKey(), "hello", 100.milliseconds.toIsoString().let { parse(it) })
+        cache.setWithTtl(MyKey(), "hello", 100.milliseconds.toIsoString().let { parse(it) })
 
-    testScheduler.advanceTimeBy(150)
+        testScheduler.advanceTimeBy(150)
 
-    assertNull(cache.getOrNull<String>(MyKey()))
-}
+        assertNull(cache.getOrNull<String>(MyKey()))
+    }
 ```

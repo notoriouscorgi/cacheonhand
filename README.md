@@ -14,11 +14,11 @@ and [swr-compose](https://github.com/kazakago/swr-compose).
 
 Cache On Hand is split into three modules that build on each other. Use only what you need:
 
-| Module                                                         | Description                                          | Use when...                                        |
-|----------------------------------------------------------------|------------------------------------------------------|----------------------------------------------------|
-| [`cacheonhand`](cacheonhand/README.md)                         | Thread-safe reactive cache with TTL                  | You just need a reactive in-memory cache           |
-| [`cacheonhand-attendants`](cacheonhand-attendants/README.md)   | Query, mutation, flow, and infinite query operations | You want managed data fetching with state tracking |
-| [`cacheonhand-compose`](cacheonhand-compose/README.md)         | Compose Multiplatform wrappers                       | You're building Compose UI                         |
+| Module                                                       | Description                                          | Use when...                                        |
+|--------------------------------------------------------------|------------------------------------------------------|----------------------------------------------------|
+| [`cacheonhand`](cacheonhand/README.md)                       | Thread-safe reactive cache with TTL                  | You just need a reactive in-memory cache           |
+| [`cacheonhand-attendants`](cacheonhand-attendants/README.md) | Query, mutation, flow, and infinite query operations | You want managed data fetching with state tracking |
+| [`cacheonhand-compose`](cacheonhand-compose/README.md)       | Compose Multiplatform wrappers                       | You're building Compose UI                         |
 
 Each module transitively includes its dependencies — adding `cacheonhand-compose` gives you everything.
 
@@ -51,12 +51,12 @@ val getUserFactory = queryFactoryOf<GetUserInput, User, ApiException>(
 ) { input -> api.getUser(input.userId) }
 
 // Wrap for Compose
-val useGetUser = composeQueryFactoryOf(getUserFactory)
+val rememberGetUser = composeQueryFactoryOf(getUserFactory)
 
 // Use in a composable
 @Composable
 fun UserScreen(userId: String) {
-    val result = useGetUser(input = GetUserInput(userId))
+    val result = rememberGetUser(input = GetUserInput(userId))
 
     when (result.fetchState) {
         FetchState.LOADING -> CircularProgressIndicator()
@@ -65,6 +65,30 @@ fun UserScreen(userId: String) {
         FetchState.IDLE -> {}
     }
 }
+```
+
+## Refetch on Mutation
+
+Refresh query data after a mutation by calling `refetch` in `onSuccess`:
+
+```kotlin
+val mutation = updateUserFactory.create()
+
+mutation.mutate(
+    queryInput = UpdateUserInput("123", "New Name"),
+    onSuccess = { _ ->
+        getUserFactory.refetch(GetUserInput("123"))
+        // All active query instances observing this key update automatically
+    },
+)
+
+// Use launch() for fire-and-forget refetches (e.g., refreshing data not currently on screen)
+mutation.mutate(
+    queryInput = UpdateUserInput("123", "New Name"),
+    onSuccess = { _ ->
+        scope.launch { getUserFactory.refetch(GetUserInput("123")) }
+    },
+)
 ```
 
 ## Features
@@ -80,6 +104,16 @@ fun UserScreen(userId: String) {
 - **Compose Integration** — composable hooks with lifecycle-aware scoping
 - **Type-Safe Errors** — generic `TError` parameter instead of raw `Throwable`
 - **Factory Pattern** — define once, use everywhere
+
+## Rules
+
+These assumptions apply across all modules:
+
+- **Cache keys must be data classes** — the cache uses HashMap internally. Regular classes without proper `equals`/`hashCode` will silently create duplicate entries. Always use `data class` for your `CacheableInput` implementations.
+- **Operations run on `Dispatchers.Default`** — use `withContext(Dispatchers.IO)` inside your query/mutation/flow lambda for network or disk calls.
+- **Don't use `launch`/`async` without awaiting inside factory lambdas** — the operation must complete sequentially so state transitions (LOADING -> SUCCESS/ERROR) are correct. However, `launch`/`async` is fine inside `onSuccess`/`onError` callbacks — those run after state transitions are complete.
+- **`refetch()` throws on failure** — unlike `fetch()` which catches errors and sets ERROR state, `refetch()` propagates exceptions to the caller. Wrap in try-catch or `scope.launch`.
+- **Null data is not an error** — a query or flow returning null sets state to SUCCESS with null data, not ERROR. This is intentional for distinguishing "no data exists" from "fetch failed".
 
 ## Development
 

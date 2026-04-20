@@ -22,15 +22,19 @@ val cache = OnHandCache()
 
 val getUserFactory = queryFactoryOf<GetUserInput, User, ApiException>(
     cache = cache,
-) { input -> api.getUser(input.userId) }
+) { input ->
+    withContext(Dispatchers.IO) {
+        api.getUser(input.userId)
+    }
+}
 
 // 2. Create a composable wrapper
-val useGetUser = composeQueryFactoryOf(getUserFactory)
+val rememberGetUser = composeQueryFactoryOf(getUserFactory)
 
 // 3. Use in any composable
 @Composable
 fun UserScreen(userId: String) {
-    val result = useGetUser(input = GetUserInput(userId))
+    val result = rememberGetUser(input = GetUserInput(userId))
 
     when (result.fetchState) {
         FetchState.LOADING -> CircularProgressIndicator()
@@ -44,11 +48,11 @@ fun UserScreen(userId: String) {
 ## Composable Query
 
 ```kotlin
-val useGetUser = composeQueryFactoryOf(getUserFactory)
+val rememberGetUser = composeQueryFactoryOf(getUserFactory)
 
 @Composable
 fun UserProfile(userId: String) {
-    val result = useGetUser(
+    val result = rememberGetUser(
         input = GetUserInput(userId),  // null = disabled (won't fetch)
         enabled = true,                // set false to prevent auto-fetch
         launchImmediately = true,      // fetch on first composition
@@ -68,11 +72,11 @@ fun UserProfile(userId: String) {
 ### Without Input
 
 ```kotlin
-val useCurrentUser = composeQueryFactoryOf(currentUserFactory)
+val rememberCurrentUser = composeQueryFactoryOf(currentUserFactory)
 
 @Composable
 fun AppHeader() {
-    val result = useCurrentUser()
+    val result = rememberCurrentUser()
     Text("Welcome, ${result.data?.name ?: "Guest"}")
 }
 ```
@@ -85,7 +89,7 @@ Pass `null` as the input or set `enabled = false` to prevent fetching:
 @Composable
 fun ConditionalQuery(userId: String?) {
     // Won't fetch until userId is non-null
-    val result = useGetUser(input = userId?.let { GetUserInput(it) })
+    val result = rememberGetUser(input = userId?.let { GetUserInput(it) })
 }
 ```
 
@@ -94,7 +98,7 @@ fun ConditionalQuery(userId: String?) {
 Automatically refetch on an interval after the initial fetch:
 
 ```kotlin
-val result = useGetUser(
+val result = rememberGetUser(
     input = GetUserInput("123"),
     refetchInterval = 10.seconds, // refetches every 10s after first load
 )
@@ -105,11 +109,11 @@ val result = useGetUser(
 Mutations are imperative — no `enabled` or `launchImmediately`. Call `mutate` when the user takes an action.
 
 ```kotlin
-val useUpdateUser = composeMutationFactoryOf(updateUserFactory)
+val rememberUpdateUser = composeMutationFactoryOf(updateUserFactory)
 
 @Composable
 fun EditUserForm(userId: String) {
-    val mutation = useUpdateUser()
+    val mutation = rememberUpdateUser()
 
     Button(onClick = {
         coroutineScope.launch {
@@ -135,11 +139,11 @@ fun EditUserForm(userId: String) {
 For mutations that don't return data:
 
 ```kotlin
-val useDeleteUser = composeMutationFactoryOf(deleteUserFactory)
+val rememberDeleteUser = composeMutationFactoryOf(deleteUserFactory)
 
 @Composable
 fun DeleteButton(userId: String) {
-    val mutation = useDeleteUser()
+    val mutation = rememberDeleteUser()
 
     Button(onClick = {
         coroutineScope.launch {
@@ -157,11 +161,11 @@ fun DeleteButton(userId: String) {
 Subscribe to reactive data sources with automatic lifecycle management.
 
 ```kotlin
-val usePriceStream = composeFlowFactoryOf(priceStreamFactory)
+val rememberPriceStream = composeFlowFactoryOf(priceStreamFactory)
 
 @Composable
 fun PriceTicker(ticker: String) {
-    val result = usePriceStream(
+    val result = rememberPriceStream(
         input = PriceStreamInput(ticker),
         launchImmediately = true,
         onEachSuccess = { price -> /* log each emission */ },
@@ -177,11 +181,11 @@ fun PriceTicker(ticker: String) {
 Paginated data with forward/backward navigation.
 
 ```kotlin
-val useFeed = composeInfiniteQueryFactoryOf(feedFactory)
+val rememberFeed = composeInfiniteQueryFactoryOf(feedFactory)
 
 @Composable
 fun FeedScreen(category: String) {
-    val result = useFeed(input = FeedInput(category))
+    val result = rememberFeed(input = FeedInput(category))
 
     LazyColumn {
         result.data?.forEach { page ->
@@ -214,7 +218,7 @@ Show cached data while refetching using `cachedDataState`:
 ```kotlin
 @Composable
 fun UserCard(userId: String) {
-    val result = useGetUser(input = GetUserInput(userId))
+    val result = rememberGetUser(input = GetUserInput(userId))
 
     when (result.cachedDataState) {
         CacheAndFetchState.NO_DATA_CACHED_AND_LOADING -> Skeleton()
@@ -233,18 +237,43 @@ fun UserCard(userId: String) {
 }
 ```
 
-### Mutation Triggering Query Refresh
+### Refetch on Mutation Success
 
-Mutations that update the cache automatically refresh any composable observing the same key:
+Refresh query data after a mutation completes by calling `refetch` in `onSuccess`:
 
 ```kotlin
 @Composable
 fun UserEditScreen(userId: String) {
-    val user = useGetUser(input = GetUserInput(userId))
-    val updateMutation = useUpdateUser()
+    val user = rememberGetUser(input = GetUserInput(userId))
+    val updateMutation = rememberUpdateUser()
 
-    // When the mutation succeeds with optimisticUpdate targeting GetUserInput,
-    // the `user` result updates automatically — no manual refetch needed
+    Button(onClick = {
+        coroutineScope.launch {
+            updateMutation.mutate(
+                queryInput = UpdateUserInput(userId, "Alice"),
+                onSuccess = { _ ->
+                    // Refetch the query — all composables observing this key update automatically
+                    getUserFactory.refetch(GetUserInput(userId))
+
+                    // Or use launch() for fire-and-forget (e.g., refreshing data not on screen)
+                    // scope.launch { otherFactory.refetch(OtherInput()) }
+                },
+            )
+        }
+    }) { Text("Update") }
+}
+```
+
+### Optimistic Update with Rollback
+
+For instant UI feedback, use `optimisticUpdate` instead of `refetch`. The cache updates immediately and rolls back if the mutation fails:
+
+```kotlin
+@Composable
+fun UserEditScreen(userId: String) {
+    val user = rememberGetUser(input = GetUserInput(userId))
+    val updateMutation = rememberUpdateUser()
+
     Button(onClick = {
         coroutineScope.launch {
             updateMutation.mutate(
@@ -272,11 +301,11 @@ val chatFactory = flowFactoryOf<ChatInput, List<Message>, Exception>(
         .scan(emptyList()) { messages, newMessage -> messages + newMessage }
 }
 
-val useChat = composeFlowFactoryOf(chatFactory)
+val rememberChat = composeFlowFactoryOf(chatFactory)
 
 @Composable
 fun ChatScreen(roomId: String) {
-    val result = useChat(input = ChatInput(roomId))
+    val result = rememberChat(input = ChatInput(roomId))
 
     LazyColumn {
         result.data?.forEach { message ->
@@ -293,7 +322,7 @@ Defer fetching until a dependency is available:
 ```kotlin
 @Composable
 fun OrderDetails(orderId: String?) {
-    val result = useGetOrder(
+    val result = rememberGetOrder(
         input = orderId?.let { GetOrderInput(it) },
         // Won't fetch until orderId is non-null
     )
@@ -305,3 +334,9 @@ fun OrderDetails(orderId: String?) {
     }
 }
 ```
+
+## Gotchas
+
+- **Input change creates a new instance** — changing the `input` parameter triggers `remember(input)`, creating a fresh query/flow instance. The old instance's scope is cleaned up by Compose.
+- **`null` input prevents fetching** — passing null as input is equivalent to `enabled = false` for the initial auto-fetch. The query stays in IDLE with no data.
+- **`launch`/`async` is fine in `onSuccess`/`onError`** — these callbacks run after state transitions are complete, so fire-and-forget work (navigation, refetching other queries, analytics) is safe here.
