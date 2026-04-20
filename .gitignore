@@ -1,0 +1,21 @@
+*.iml
+.gradle
+.idea
+.DS_Store
+build
+captures
+.externalNativeBuild
+.cxx
+local.properties
+xcuserdata
+.kotlin
+kotlin-js-store
+.claude
+
+# Generated Dokka docs (created by generateModuleDocs + dokkaGenerate tasks)
+module.md
+*/module.md
+docs/
+
+# Don't accidentally commit private keys
+*.gpg
