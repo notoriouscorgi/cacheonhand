@@ -21,7 +21,7 @@ dokka {
 }
 
 group = "io.github.notoriouscorgi"
-version = System.getenv("RELEASE_VERSION")?.removePrefix("v") ?: "0.0.1-SNAPSHOT"
+version = System.getenv("RELEASE_VERSION")?.removePrefix("v") ?: "0.0.1"
 
 kotlin {
     jvm()
@@ -72,14 +72,7 @@ kotlin {
 }
 
 mavenPublishing {
-    val isSnapshot = version.toString().endsWith("SNAPSHOT")
-    val host =
-        if (isSnapshot) {
-            com.vanniktech.maven.publish.SonatypeHost.S01
-        } else {
-            com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL
-        }
-    publishToMavenCentral(host)
+    publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
     signAllPublications()
 
     pom {

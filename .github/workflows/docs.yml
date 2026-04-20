@@ -29,6 +29,8 @@ jobs:
 
       - run: ./gradlew :dokkaGenerate
 
+      - run: cp -r assets docs/assets
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/cacheonhandcorgi.png" alt="Cache On Hand" width="200" />
+</p>
+
 # Cache On Hand
 
 A local-first caching library for Kotlin Multiplatform with stale-while-revalidate support.
@@ -96,6 +100,19 @@ fun UserScreen(userId: String) {
 ./gradlew cacheonhand-attendants:jvmTest
 ./gradlew cacheonhand-compose:jvmTest
 ```
+
+### Release
+
+Create a release and publish to Maven Central:
+
+```bash
+./scripts/release.sh         # auto-increments minor version (0.1.0 → 0.2.0)
+./scripts/release.sh 1.0.0   # explicit version
+```
+
+Or trigger directly from GitHub Actions (Actions -> Publish -> Run workflow) with an optional version input.
+
+The workflow runs tests first, then publishes all three modules to Maven Central.
 
 ### Generate Docs
 
