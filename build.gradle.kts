@@ -12,6 +12,9 @@ dokka {
         outputDirectory.set(layout.projectDirectory.dir("docs"))
         includes.from("module.md")
     }
+    pluginsConfiguration.html {
+        customAssets.from("assets/logo-icon.svg")
+    }
 }
 
 dependencies {
