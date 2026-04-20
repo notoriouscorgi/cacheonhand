@@ -4,11 +4,29 @@
 
 # Cache On Hand
 
-A local-first caching library for Kotlin Multiplatform with stale-while-revalidate support.
-Inspired by [React Query](https://tanstack.com/query)
-and [swr-compose](https://github.com/kazakago/swr-compose).
+A set of solutions for operating on a global cache. Heavily inspired by:
+
+- [React Query](https://tanstack.com/query)
+- [swr-compose](https://github.com/kazakago/swr-compose).
 
 **Platforms:** JVM, Android, iOS (x64/arm64/simulator), WASM-JS
+
+## Goals
+
+CacheOnHand provides the following:
+
+- Modularization that allows for taking ONLY what you need
+- No enforcement of UI framework - the barebones are compose agnostic
+- A familiar API for users coming from a react query, or SWR like framework
+- Transactional optimistic cache updates, that can rollback on error. Allowing for a snappy UI experience
+- Tools operating on your cache as a Query, Mutation, InfiniteQuery, or Flow
+- Typed `refetch()` and `optimisticUpdater()` functions that exist at definition (not at use), and are usable anywhere
+
+## Future work
+
+- Persisting outside the local cache
+- Cache viewer plugin
+- Integration with data fetching frameworks
 
 ## Modules
 
@@ -48,7 +66,23 @@ val cache = OnHandCache()
 // Define a query factory
 val getUserFactory = queryFactoryOf<GetUserInput, User, ApiException>(
     cache = cache,
-) { input -> api.getUser(input.userId) }
+) {
+    withContext(Dispatchers.IO) { input ->
+        api.getUser(input.userId)
+    }
+}
+
+// Query your data
+val queryAndResult = getUserFactory()
+
+// Start listening to results
+queryAndResult.result.collect { ... }
+
+// Fetch your query
+viewModelScope.launch {
+    queryAndResult.fetch(GetUserInput(1))
+}
+
 
 // Wrap for Compose
 val rememberGetUser = composeQueryFactoryOf(getUserFactory)
@@ -109,11 +143,17 @@ mutation.mutate(
 
 These assumptions apply across all modules:
 
-- **Cache keys must be data classes** — the cache uses HashMap internally. Regular classes without proper `equals`/`hashCode` will silently create duplicate entries. Always use `data class` for your `CacheableInput` implementations.
-- **Operations run on `Dispatchers.Default`** — use `withContext(Dispatchers.IO)` inside your query/mutation/flow lambda for network or disk calls.
-- **Don't use `launch`/`async` without awaiting inside factory lambdas** — the operation must complete sequentially so state transitions (LOADING -> SUCCESS/ERROR) are correct. However, `launch`/`async` is fine inside `onSuccess`/`onError` callbacks — those run after state transitions are complete.
-- **`refetch()` throws on failure** — unlike `fetch()` which catches errors and sets ERROR state, `refetch()` propagates exceptions to the caller. Wrap in try-catch or `scope.launch`.
-- **Null data is not an error** — a query or flow returning null sets state to SUCCESS with null data, not ERROR. This is intentional for distinguishing "no data exists" from "fetch failed".
+- **Cache keys must be data classes** — the cache uses HashMap internally. Regular classes without proper `equals`/
+  `hashCode` will silently create duplicate entries. Always use `data class` for your `CacheableInput` implementations.
+- **Operations run on `Dispatchers.Default`** — use `withContext(Dispatchers.IO)` inside your query/mutation/flow lambda
+  for network or disk calls.
+- **Don't use `launch`/`async` without awaiting inside factory lambdas** — the operation must complete sequentially so
+  state transitions (LOADING -> SUCCESS/ERROR) are correct. However, `launch`/`async` is fine inside `onSuccess`/
+  `onError` callbacks — those run after state transitions are complete.
+- **`refetch()` throws on failure** — unlike `fetch()` which catches errors and sets ERROR state, `refetch()` propagates
+  exceptions to the caller. Wrap in try-catch or `scope.launch`.
+- **Null data is not an error** — a query or flow returning null sets state to SUCCESS with null data, not ERROR. This
+  is intentional for distinguishing "no data exists" from "fetch failed".
 
 ## Development
 
