@@ -1,5 +1,6 @@
 package io.github.notoriouscorgi.cacheonhand
 
+import dev.mokkery.spy
 import io.github.notoriouscorgi.cacheonhand.CacheableInput.FlowInput
 import io.github.notoriouscorgi.cacheonhand.CacheableInput.MutationInput
 import io.github.notoriouscorgi.cacheonhand.CacheableInput.QueryInput
@@ -83,8 +84,14 @@ val testQueryFactoryWithNoInput =
         2
     }
 
+val dependentFunctionMock = spy<suspend (Int) -> Unit>({})
+val dependentNoArgFunctionMock = spy<suspend () -> Unit>({})
 val testMutationFactoryWithInput =
-    mutationFactoryOf<FakeMutationInput, Int, Exception>(cache = cache) { input: FakeMutationInput ->
+    mutationFactoryOf<FakeMutationInput, Int, Exception>(
+        cache = cache,
+        dependentActions =
+            listOf(dependentFunctionMock),
+    ) { input: FakeMutationInput ->
         if (input.isError) {
             valueBeforeRollback = cache.get<Int>(FakeInput(3, false)).value
             throw Exception("Boom")
@@ -93,7 +100,10 @@ val testMutationFactoryWithInput =
     }
 
 val testMutationFactoryWithInputNoOutput =
-    mutationFactoryWithNoOutputOf<FakeMutationInput, Exception>(cache = cache) { input: FakeMutationInput ->
+    mutationFactoryWithNoOutputOf<FakeMutationInput, Exception>(
+        cache = cache,
+        dependentActions = listOf(dependentNoArgFunctionMock),
+    ) { input: FakeMutationInput ->
         if (input.isError) {
             valueBeforeRollback = cache.get<Int>(FakeInput(3, false)).value
             throw Exception("Boom")
@@ -101,7 +111,10 @@ val testMutationFactoryWithInputNoOutput =
     }
 
 val testMutationFactoryWithNoInput =
-    mutationFactoryOf<Int, Exception>(cache = cache) {
+    mutationFactoryOf<Int, Exception>(
+        cache = cache,
+        dependentActions = listOf(dependentFunctionMock),
+    ) {
         if (isMutationError) {
             throw Exception("Boom")
         }
@@ -109,7 +122,10 @@ val testMutationFactoryWithNoInput =
     }
 
 val testMutationFactoryWithNoInputNoOutput =
-    mutationFactoryWithNoOutputOf<Exception>(cache = cache) {
+    mutationFactoryWithNoOutputOf<Exception>(
+        cache = cache,
+        dependentActions = listOf(dependentNoArgFunctionMock),
+    ) {
         if (isMutationError) {
             throw Exception("Boom")
         }

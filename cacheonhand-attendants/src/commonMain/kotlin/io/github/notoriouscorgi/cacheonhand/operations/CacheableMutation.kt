@@ -7,6 +7,8 @@ import io.github.notoriouscorgi.cacheonhand.CacheableInput.MutationInput
 import io.github.notoriouscorgi.cacheonhand.OnHandCache
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
@@ -26,6 +28,7 @@ class CacheableMutationWithInput<TInput : MutationInput, TData, TError : Throwab
     private val launchMutation: suspend (input: TInput) -> TData?,
     private val cache: OnHandCache,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dependentActions: List<suspend (mutationData: TData) -> Unit> = emptyList(),
 ) {
     private val _result: MutableStateFlow<CacheableMutationResult<TData, TError>> =
         MutableStateFlow(
@@ -53,6 +56,14 @@ class CacheableMutationWithInput<TInput : MutationInput, TData, TError : Throwab
                             data =
                                 launchMutation(queryInput).also {
                                     onSuccess?.invoke(it as TData)
+
+                                    // Run dependent actions
+                                    dependentActions
+                                        .map { action ->
+                                            async {
+                                                action.invoke(it as TData)
+                                            }
+                                        }.awaitAll()
                                 },
                         )
                 } catch (error: Throwable) {
@@ -81,6 +92,7 @@ class CacheableMutationWithNoInput<TData, TError : Throwable>(
     private val launchMutation: suspend () -> TData?,
     private val cache: OnHandCache,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dependentActions: List<suspend (mutationData: TData) -> Unit> = emptyList(),
 ) {
     private val _result: MutableStateFlow<CacheableMutationResult<TData, TError>> =
         MutableStateFlow(
@@ -107,6 +119,14 @@ class CacheableMutationWithNoInput<TData, TError : Throwable>(
                             data =
                                 launchMutation().also {
                                     onSuccess?.invoke(it as TData)
+
+                                    // Run dependent actions
+                                    dependentActions
+                                        .map { action ->
+                                            async {
+                                                action.invoke(it as TData)
+                                            }
+                                        }.awaitAll()
                                 },
                         )
                 } catch (error: Throwable) {
@@ -135,6 +155,7 @@ class CacheableFireAndForgetMutationWithInput<TInput : MutationInput, TError : T
     private val howTo: suspend (input: TInput) -> Unit,
     private val cache: OnHandCache,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dependentActions: List<suspend () -> Unit> = emptyList(),
 ) {
     private val _result: MutableStateFlow<CacheableFireAndForgetMutationResult<TError>> =
         MutableStateFlow(
@@ -158,6 +179,12 @@ class CacheableFireAndForgetMutationWithInput<TInput : MutationInput, TError : T
                     howTo(queryInput)
                     _result.value = _result.value.copy(fetchState = FetchState.SUCCESS)
                     onSuccess?.invoke()
+                    dependentActions
+                        .map { action ->
+                            async {
+                                action()
+                            }
+                        }.awaitAll()
                     Unit
                 } catch (error: Throwable) {
                     _result.value = _result.value.copy(error = error as TError?, fetchState = FetchState.ERROR)
@@ -188,6 +215,7 @@ class CacheableFireAndForgetMutationWithNoInput<TError : Throwable>(
     private val howTo: suspend () -> Unit,
     private val cache: OnHandCache,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dependentActions: List<suspend () -> Unit> = emptyList(),
 ) {
     private val _result: MutableStateFlow<CacheableFireAndForgetMutationResult<TError>> =
         MutableStateFlow(
@@ -210,6 +238,12 @@ class CacheableFireAndForgetMutationWithNoInput<TError : Throwable>(
                     howTo()
                     _result.value = _result.value.copy(fetchState = FetchState.SUCCESS)
                     onSuccess?.invoke()
+                    dependentActions
+                        .map { action ->
+                            async {
+                                action()
+                            }
+                        }.awaitAll()
                     Unit
                 } catch (error: Throwable) {
                     _result.value = _result.value.copy(error = error as TError?, fetchState = FetchState.ERROR)
@@ -236,10 +270,16 @@ class CacheableFireAndForgetMutationWithNoInput<TError : Throwable>(
 class MutationFactoryWithInput<TInput : MutationInput, TData, TError : Throwable>(
     private val cache: OnHandCache,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dependentActions: List<suspend (mutationData: TData) -> Unit> = emptyList(),
     private val mutation: suspend (input: TInput) -> TData,
 ) {
     fun create(): CacheableMutationWithInput<TInput, TData, TError> =
-        CacheableMutationWithInput(launchMutation = mutation, cache = cache, dispatcher = dispatcher)
+        CacheableMutationWithInput(
+            launchMutation = mutation,
+            cache = cache,
+            dispatcher = dispatcher,
+            dependentActions = dependentActions,
+        )
 
     operator fun invoke(): CacheableMutationWithInput<TInput, TData, TError> = create()
 }
@@ -247,10 +287,16 @@ class MutationFactoryWithInput<TInput : MutationInput, TData, TError : Throwable
 class MutationFactoryWithNoInput<TData, TError : Throwable>(
     private val cache: OnHandCache,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dependentActions: List<suspend (mutationData: TData) -> Unit> = emptyList(),
     private val mutation: suspend () -> TData,
 ) {
     fun create(): CacheableMutationWithNoInput<TData, TError> =
-        CacheableMutationWithNoInput(cache = cache, launchMutation = mutation, dispatcher = dispatcher)
+        CacheableMutationWithNoInput(
+            cache = cache,
+            launchMutation = mutation,
+            dispatcher = dispatcher,
+            dependentActions = dependentActions,
+        )
 
     operator fun invoke(): CacheableMutationWithNoInput<TData, TError> = create()
 }
@@ -258,10 +304,16 @@ class MutationFactoryWithNoInput<TData, TError : Throwable>(
 class FireAndForgetMutationFactoryWithInput<TInput : MutationInput, TError : Throwable>(
     private val cache: OnHandCache,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dependentActions: List<suspend () -> Unit> = emptyList(),
     private val mutation: suspend (input: TInput) -> Unit,
 ) {
     fun create(): CacheableFireAndForgetMutationWithInput<TInput, TError> =
-        CacheableFireAndForgetMutationWithInput(howTo = mutation, cache = cache, dispatcher = dispatcher)
+        CacheableFireAndForgetMutationWithInput(
+            howTo = mutation,
+            cache = cache,
+            dispatcher = dispatcher,
+            dependentActions = dependentActions,
+        )
 
     operator fun invoke(): CacheableFireAndForgetMutationWithInput<TInput, TError> = create()
 }
@@ -269,10 +321,16 @@ class FireAndForgetMutationFactoryWithInput<TInput : MutationInput, TError : Thr
 class FireAndForgetMutationFactoryWithNoInput<TError : Throwable>(
     private val cache: OnHandCache,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dependentActions: List<suspend () -> Unit> = emptyList(),
     private val mutation: suspend () -> Unit,
 ) {
     fun create(): CacheableFireAndForgetMutationWithNoInput<TError> =
-        CacheableFireAndForgetMutationWithNoInput(cache = cache, howTo = mutation, dispatcher = dispatcher)
+        CacheableFireAndForgetMutationWithNoInput(
+            cache = cache,
+            howTo = mutation,
+            dispatcher = dispatcher,
+            dependentActions = dependentActions,
+        )
 
     operator fun invoke(): CacheableFireAndForgetMutationWithNoInput<TError> = create()
 }
@@ -281,24 +339,74 @@ fun <TInput : MutationInput, TData, TError : Throwable> mutationFactoryOf(
     cache: OnHandCache,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
     query: suspend (input: TInput) -> TData,
-): MutationFactoryWithInput<TInput, TData, TError> = MutationFactoryWithInput(cache = cache, dispatcher = dispatcher, mutation = query)
+) = mutationFactoryOf<TInput, TData, TError>(cache, dispatcher, emptyList(), query)
+
+fun <TInput : MutationInput, TData, TError : Throwable> mutationFactoryOf(
+    cache: OnHandCache,
+    dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    dependentActions: List<suspend (mutationData: TData) -> Unit> = emptyList(),
+    query: suspend (input: TInput) -> TData,
+): MutationFactoryWithInput<TInput, TData, TError> =
+    MutationFactoryWithInput(
+        cache = cache,
+        dispatcher = dispatcher,
+        mutation = query,
+        dependentActions = dependentActions,
+    )
 
 fun <TInput : MutationInput, TError : Throwable> mutationFactoryWithNoOutputOf(
     cache: OnHandCache,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
     query: suspend (input: TInput) -> Unit,
+) = mutationFactoryWithNoOutputOf<TInput, TError>(cache, dispatcher, emptyList(), query)
+
+fun <TInput : MutationInput, TError : Throwable> mutationFactoryWithNoOutputOf(
+    cache: OnHandCache,
+    dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    dependentActions: List<suspend () -> Unit> = emptyList(),
+    query: suspend (input: TInput) -> Unit,
 ): FireAndForgetMutationFactoryWithInput<TInput, TError> =
-    FireAndForgetMutationFactoryWithInput(cache = cache, dispatcher = dispatcher, mutation = query)
+    FireAndForgetMutationFactoryWithInput(
+        cache = cache,
+        dispatcher = dispatcher,
+        mutation = query,
+        dependentActions = dependentActions,
+    )
 
 fun <TData, TError : Throwable> mutationFactoryOf(
     cache: OnHandCache,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
     query: suspend () -> TData,
-): MutationFactoryWithNoInput<TData, TError> = MutationFactoryWithNoInput(cache = cache, dispatcher = dispatcher, mutation = query)
+) = mutationFactoryOf<TData, TError>(cache, dispatcher, emptyList(), query)
+
+fun <TData, TError : Throwable> mutationFactoryOf(
+    cache: OnHandCache,
+    dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    dependentActions: List<suspend (mutationData: TData) -> Unit> = emptyList(),
+    query: suspend () -> TData,
+): MutationFactoryWithNoInput<TData, TError> =
+    MutationFactoryWithNoInput(
+        cache = cache,
+        dispatcher = dispatcher,
+        mutation = query,
+        dependentActions = dependentActions,
+    )
 
 fun <TError : Throwable> mutationFactoryWithNoOutputOf(
     cache: OnHandCache,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
     query: suspend () -> Unit,
+) = mutationFactoryWithNoOutputOf<TError>(cache, dispatcher, emptyList(), query)
+
+fun <TError : Throwable> mutationFactoryWithNoOutputOf(
+    cache: OnHandCache,
+    dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    dependentActions: List<suspend () -> Unit> = emptyList(),
+    query: suspend () -> Unit,
 ): FireAndForgetMutationFactoryWithNoInput<TError> =
-    FireAndForgetMutationFactoryWithNoInput(cache = cache, dispatcher = dispatcher, mutation = query)
+    FireAndForgetMutationFactoryWithNoInput(
+        cache = cache,
+        dispatcher = dispatcher,
+        mutation = query,
+        dependentActions = dependentActions,
+    )

@@ -4,6 +4,8 @@ package io.github.notoriouscorgi.cacheonhand.operations
 
 import io.github.notoriouscorgi.cacheonhand.CacheableInput.QueryInput
 import io.github.notoriouscorgi.cacheonhand.OnHandCache
+import io.github.notoriouscorgi.cacheonhand.operations.RefetchableFactory.RefetchableFactoryWithInput
+import io.github.notoriouscorgi.cacheonhand.operations.RefetchableFactory.RefetchableFactoryWithNoInput
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -151,7 +153,7 @@ class QueryFactoryWithInput<TInput : QueryInput, TData, TError : Throwable>(
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: Duration? = null,
     private val query: suspend (input: TInput) -> TData,
-) {
+) : RefetchableFactoryWithInput<TInput> {
     fun create(
         startingCacheKey: TInput? = null,
         coroutineScope: CoroutineScope,
@@ -173,7 +175,7 @@ class QueryFactoryWithInput<TInput : QueryInput, TData, TError : Throwable>(
         initialFetchState: FetchState = FetchState.IDLE,
     ): CacheableQueryWithInput<TInput, TData, TError> = create(startingCacheKey, coroutineScope, initialFetchState)
 
-    suspend fun refetch(input: TInput) {
+    override suspend fun refetch(input: TInput) {
         withContext(dispatcher) {
             cache.setMaybeWithTtl(input, query(input), ttl)
         }
@@ -202,7 +204,7 @@ class QueryFactoryWithNoInput<TData, TError : Throwable>(
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: Duration? = null,
     private val query: suspend () -> TData,
-) {
+) : RefetchableFactoryWithNoInput {
     fun create(
         coroutineScope: CoroutineScope,
         initialFetchState: FetchState = FetchState.IDLE,
@@ -222,7 +224,7 @@ class QueryFactoryWithNoInput<TData, TError : Throwable>(
         initialFetchState: FetchState = FetchState.IDLE,
     ): CacheableQueryWithNoInput<TData, TError> = create(coroutineScope, initialFetchState)
 
-    suspend fun refetch() {
+    override suspend fun refetch() {
         withContext(dispatcher) {
             cache.setMaybeWithTtl(cacheKey, query(), ttl)
         }

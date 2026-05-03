@@ -1,9 +1,11 @@
 package io.github.notoriouscorgi.cacheonhand
 
 import dev.mokkery.matcher.any
+import dev.mokkery.resetCalls
 import dev.mokkery.spy
 import dev.mokkery.verify
 import dev.mokkery.verify.VerifyMode.Companion.not
+import dev.mokkery.verifySuspend
 import io.github.notoriouscorgi.cacheonhand.CacheableInput.MutationInput
 import io.github.notoriouscorgi.cacheonhand.operations.FetchState
 import io.github.notoriouscorgi.cacheonhand.operations.PagedData
@@ -20,6 +22,8 @@ class MutationTest {
     @BeforeTest
     fun before() {
         resetTestState()
+        resetCalls(dependentFunctionMock)
+        resetCalls(dependentNoArgFunctionMock)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -43,6 +47,7 @@ class MutationTest {
             verify(not) {
                 onError(Exception("Boom"))
             }
+            verifySuspend { dependentFunctionMock.invoke(5) }
             assertNull(mutationInstance.result.value.error)
             assertEquals(5, mutationInstance.result.value.data)
             assertEquals(mutationInstance.result.value.fetchState, FetchState.SUCCESS)
@@ -103,6 +108,7 @@ class MutationTest {
             verify(not) {
                 onError(Exception("Boom"))
             }
+            verifySuspend { dependentFunctionMock.invoke(2) }
             assertNull(mutationInstance.result.value.error)
             assertEquals(2, mutationInstance.result.value.data)
             assertEquals(mutationInstance.result.value.fetchState, FetchState.SUCCESS)
@@ -181,6 +187,7 @@ class MutationTest {
             verify(not) {
                 onError(Exception("Boom"))
             }
+            verifySuspend { dependentFunctionMock.invoke(2) }
             assertNull(mutationInstance.result.value.error)
             assertEquals(2, mutationInstance.result.value.data)
             assertEquals(mutationInstance.result.value.fetchState, FetchState.SUCCESS)
@@ -232,6 +239,7 @@ class MutationTest {
             verify(not) {
                 onError(Exception("Boom"))
             }
+            verifySuspend { dependentNoArgFunctionMock.invoke() }
             assertNull(mutationInstance.result.value.error)
             assertEquals(mutationInstance.result.value.fetchState, FetchState.SUCCESS)
         }
@@ -257,6 +265,7 @@ class MutationTest {
             verify(not) {
                 onError(Exception("Boom"))
             }
+            verifySuspend { dependentNoArgFunctionMock.invoke() }
             assertNull(mutationInstance.result.value.error)
             assertEquals(mutationInstance.result.value.fetchState, FetchState.SUCCESS)
         }

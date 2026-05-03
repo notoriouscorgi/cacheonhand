@@ -4,10 +4,15 @@ package io.github.notoriouscorgi.cacheonhand.operations
 
 import io.github.notoriouscorgi.cacheonhand.CacheableInput.QueryInput
 import io.github.notoriouscorgi.cacheonhand.OnHandCache
+import io.github.notoriouscorgi.cacheonhand.operations.RefetchableFactory.RefetchableFactoryWithInput
+import io.github.notoriouscorgi.cacheonhand.operations.RefetchableFactory.RefetchableFactoryWithNoInput
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -194,11 +199,13 @@ class CacheableInfiniteQueryWithInput<TInput : QueryInput, TPageParam, TData, TE
                 launchQuery(queryInput, page).also {
                     val newPageData = PagedData<TPageParam?, TData>(page, it)
                     val existing = cache.get<List<PagedData<TPageParam?, TData>>>(cacheKey).value ?: emptyList()
-                    val updated = existing.map { entry ->
-                        if (entry.page == page) newPageData else entry
-                    }.let { mapped ->
-                        if (mapped.none { entry -> entry.page == page }) mapped + newPageData else mapped
-                    }
+                    val updated =
+                        existing
+                            .map { entry ->
+                                if (entry.page == page) newPageData else entry
+                            }.let { mapped ->
+                                if (mapped.none { entry -> entry.page == page }) mapped + newPageData else mapped
+                            }
                     cache.setMaybeWithTtl(cacheKey, updated, ttl)
                     onSuccess?.invoke(newPageData)
                     fetchStateFlow.value = FetchState.SUCCESS
@@ -343,11 +350,13 @@ class CacheableInfiniteQueryWithNoInput<TPageParam, TData, TError : Throwable>(
             launchQuery(page).also {
                 val newPageData = PagedData<TPageParam?, TData>(page, it)
                 val existing = cache.get<List<PagedData<TPageParam?, TData>>>(cacheKey).value ?: emptyList()
-                val updated = existing.map { entry ->
-                    if (entry.page == page) newPageData else entry
-                }.let { mapped ->
-                    if (mapped.none { entry -> entry.page == page }) mapped + newPageData else mapped
-                }
+                val updated =
+                    existing
+                        .map { entry ->
+                            if (entry.page == page) newPageData else entry
+                        }.let { mapped ->
+                            if (mapped.none { entry -> entry.page == page }) mapped + newPageData else mapped
+                        }
                 cache.setMaybeWithTtl(cacheKey, updated, ttl)
                 onSuccess?.invoke(newPageData)
                 fetchStateFlow.value = FetchState.SUCCESS
@@ -371,7 +380,7 @@ class InfiniteQueryFactoryWithInput<TInput : QueryInput, TPageParam, TData, TErr
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: kotlin.time.Duration? = null,
     private val query: suspend (input: TInput, page: TPageParam?) -> TData?,
-) {
+) : RefetchableFactoryWithInput<TInput> {
     fun create(
         startingCacheKey: TInput? = null,
         coroutineScope: CoroutineScope,
@@ -403,6 +412,30 @@ class InfiniteQueryFactoryWithInput<TInput : QueryInput, TPageParam, TData, TErr
         val currentValue = cache.getOrNull<List<PagedData<TPageParam?, TData>>>(input)?.value
         return mapOf(input to updater(currentValue))
     }
+
+    override suspend fun refetch(input: TInput) =
+        coroutineScope {
+            withContext(dispatcher) {
+                val currentValue = cache.getOrNull<List<PagedData<TPageParam?, TData>>>(input)?.value
+                val fetchCalls =
+                    currentValue
+                        ?.map {
+                            async {
+                                runCatching { query(input, it.page) }
+                            }
+                        }?.awaitAll()
+                val updatedValue =
+                    fetchCalls?.mapIndexed { index, newValue ->
+                        val currentValAtIdx = currentValue[index]
+                        if (newValue.isSuccess) {
+                            PagedData(currentValAtIdx.page, newValue.getOrThrow())
+                        } else {
+                            currentValAtIdx
+                        }
+                    }
+                cache[input] = updatedValue
+            }
+        }
 }
 
 class InfiniteQueryFactoryWithNoInput<TPageParam, TData, TError : Throwable>(
@@ -414,7 +447,7 @@ class InfiniteQueryFactoryWithNoInput<TPageParam, TData, TError : Throwable>(
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: kotlin.time.Duration? = null,
     private val query: suspend (page: TPageParam?) -> TData?,
-) {
+) : RefetchableFactoryWithNoInput {
     fun create(
         coroutineScope: CoroutineScope,
         initialFetchState: FetchState = FetchState.IDLE,
@@ -435,8 +468,7 @@ class InfiniteQueryFactoryWithNoInput<TPageParam, TData, TError : Throwable>(
     operator fun invoke(
         coroutineScope: CoroutineScope,
         initialFetchState: FetchState = FetchState.IDLE,
-    ): CacheableInfiniteQueryWithNoInput<TPageParam, TData, TError> =
-        create(coroutineScope, initialFetchState)
+    ): CacheableInfiniteQueryWithNoInput<TPageParam, TData, TError> = create(coroutineScope, initialFetchState)
 
     fun optimisticUpdater(
         updater: (currentValue: List<PagedData<TPageParam?, TData>>?) -> List<PagedData<TPageParam?, TData>>,
@@ -444,6 +476,30 @@ class InfiniteQueryFactoryWithNoInput<TPageParam, TData, TError : Throwable>(
         val currentValue = cache.getOrNull<List<PagedData<TPageParam?, TData>>>(cacheKey)?.value
         return mapOf(cacheKey to updater(currentValue))
     }
+
+    override suspend fun refetch() =
+        coroutineScope {
+            withContext(dispatcher) {
+                val currentValue = cache.getOrNull<List<PagedData<TPageParam?, TData>>>(cacheKey)?.value
+                val fetchCalls =
+                    currentValue
+                        ?.map {
+                            async {
+                                runCatching { query(it.page) }
+                            }
+                        }?.awaitAll()
+                val updatedValue =
+                    fetchCalls?.mapIndexed { index, newValue ->
+                        val currentValAtIdx = currentValue[index]
+                        if (newValue.isSuccess) {
+                            PagedData(currentValAtIdx.page, newValue.getOrThrow())
+                        } else {
+                            currentValAtIdx
+                        }
+                    }
+                cache[cacheKey] = updatedValue
+            }
+        }
 }
 
 fun <TInput : QueryInput, TPageParam, TData, TError : Throwable> infiniteQueryFactoryOf(
