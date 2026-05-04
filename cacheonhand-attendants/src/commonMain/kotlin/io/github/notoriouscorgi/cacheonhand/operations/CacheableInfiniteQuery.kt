@@ -6,6 +6,7 @@ import io.github.notoriouscorgi.cacheonhand.CacheableInput.QueryInput
 import io.github.notoriouscorgi.cacheonhand.OnHandCache
 import io.github.notoriouscorgi.cacheonhand.operations.RefetchableFactory.RefetchableFactoryWithInput
 import io.github.notoriouscorgi.cacheonhand.operations.RefetchableFactory.RefetchableFactoryWithNoInput
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,7 +22,12 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /**
  * Sealed type for representing the next or previous page param in infinite queries.
@@ -379,8 +385,40 @@ class InfiniteQueryFactoryWithInput<TInput : QueryInput, TPageParam, TData, TErr
     private val getPreviousPageParam: (suspend (pages: List<PagedData<TPageParam?, TData>>) -> PageParam<TPageParam>)? = null,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: kotlin.time.Duration? = null,
+    private val dedupingInterval: kotlin.time.Duration? = 2.seconds,
+    internal val timeSource: TimeSource = TimeSource.Monotonic,
     private val query: suspend (input: TInput, page: TPageParam?) -> TData?,
 ) : RefetchableFactoryWithInput<TInput> {
+    private val inFlight = mutableMapOf<Pair<TInput, TPageParam?>, Pair<CompletableDeferred<TData?>, TimeMark>>()
+    private val inFlightLock = Mutex()
+
+    internal suspend fun dedupedQuery(input: TInput, page: TPageParam?): TData? {
+        val key = Pair(input, page)
+        val (deferred, isNew) = inFlightLock.withLock {
+            val existing = inFlight[key]
+            val interval = dedupingInterval
+            if (existing != null && (interval == null || existing.second.elapsedNow() <= interval)) {
+                Pair(existing.first, false)
+            } else {
+                val completable = CompletableDeferred<TData?>()
+                inFlight[key] = Pair(completable, timeSource.markNow())
+                Pair(completable, true)
+            }
+        }
+        if (isNew) {
+            try {
+                deferred.complete(query(input, page))
+            } catch (e: Throwable) {
+                deferred.completeExceptionally(e)
+            } finally {
+                inFlightLock.withLock {
+                    if (inFlight[key]?.first === deferred) inFlight.remove(key)
+                }
+            }
+        }
+        return deferred.await()
+    }
+
     fun create(
         startingCacheKey: TInput? = null,
         coroutineScope: CoroutineScope,
@@ -388,7 +426,7 @@ class InfiniteQueryFactoryWithInput<TInput : QueryInput, TPageParam, TData, TErr
     ): CacheableInfiniteQueryWithInput<TInput, TPageParam, TData, TError> =
         CacheableInfiniteQueryWithInput(
             coroutineScope = coroutineScope,
-            launchQuery = query,
+            launchQuery = ::dedupedQuery,
             initialPageParam = initialPageParam,
             getNextPageParam = getNextPageParam,
             getPreviousPageParam = getPreviousPageParam,
@@ -421,7 +459,7 @@ class InfiniteQueryFactoryWithInput<TInput : QueryInput, TPageParam, TData, TErr
                     currentValue
                         ?.map {
                             async {
-                                runCatching { query(input, it.page) }
+                                runCatching { dedupedQuery(input, it.page) }
                             }
                         }?.awaitAll()
                 val updatedValue =
@@ -446,15 +484,46 @@ class InfiniteQueryFactoryWithNoInput<TPageParam, TData, TError : Throwable>(
     private val getPreviousPageParam: (suspend (pages: List<PagedData<TPageParam?, TData>>) -> PageParam<TPageParam>)? = null,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: kotlin.time.Duration? = null,
+    private val dedupingInterval: kotlin.time.Duration? = 2.seconds,
+    internal val timeSource: TimeSource = TimeSource.Monotonic,
     private val query: suspend (page: TPageParam?) -> TData?,
 ) : RefetchableFactoryWithNoInput {
+    private val inFlight = mutableMapOf<TPageParam?, Pair<CompletableDeferred<TData?>, TimeMark>>()
+    private val inFlightLock = Mutex()
+
+    internal suspend fun dedupedQuery(page: TPageParam?): TData? {
+        val (deferred, isNew) = inFlightLock.withLock {
+            val existing = inFlight[page]
+            val interval = dedupingInterval
+            if (existing != null && (interval == null || existing.second.elapsedNow() <= interval)) {
+                Pair(existing.first, false)
+            } else {
+                val completable = CompletableDeferred<TData?>()
+                inFlight[page] = Pair(completable, timeSource.markNow())
+                Pair(completable, true)
+            }
+        }
+        if (isNew) {
+            try {
+                deferred.complete(query(page))
+            } catch (e: Throwable) {
+                deferred.completeExceptionally(e)
+            } finally {
+                inFlightLock.withLock {
+                    if (inFlight[page]?.first === deferred) inFlight.remove(page)
+                }
+            }
+        }
+        return deferred.await()
+    }
+
     fun create(
         coroutineScope: CoroutineScope,
         initialFetchState: FetchState = FetchState.IDLE,
     ): CacheableInfiniteQueryWithNoInput<TPageParam, TData, TError> =
         CacheableInfiniteQueryWithNoInput(
             coroutineScope = coroutineScope,
-            launchQuery = query,
+            launchQuery = ::dedupedQuery,
             initialPageParam = initialPageParam,
             getNextPageParam = getNextPageParam,
             getPreviousPageParam = getPreviousPageParam,
@@ -485,7 +554,7 @@ class InfiniteQueryFactoryWithNoInput<TPageParam, TData, TError : Throwable>(
                     currentValue
                         ?.map {
                             async {
-                                runCatching { query(it.page) }
+                                runCatching { dedupedQuery(it.page) }
                             }
                         }?.awaitAll()
                 val updatedValue =
@@ -509,6 +578,7 @@ fun <TInput : QueryInput, TPageParam, TData, TError : Throwable> infiniteQueryFa
     getPreviousPageParam: (suspend (pages: List<PagedData<TPageParam?, TData>>) -> PageParam<TPageParam>)? = null,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
     ttl: kotlin.time.Duration? = null,
+    dedupingInterval: kotlin.time.Duration? = 2.seconds,
     query: suspend (input: TInput, page: TPageParam?) -> TData?,
 ): InfiniteQueryFactoryWithInput<TInput, TPageParam, TData, TError> =
     InfiniteQueryFactoryWithInput(
@@ -518,6 +588,7 @@ fun <TInput : QueryInput, TPageParam, TData, TError : Throwable> infiniteQueryFa
         getPreviousPageParam = getPreviousPageParam,
         dispatcher = dispatcher,
         ttl = ttl,
+        dedupingInterval = dedupingInterval,
         query = query,
     )
 
@@ -529,6 +600,7 @@ fun <TPageParam, TData, TError : Throwable> infiniteQueryFactoryOf(
     getPreviousPageParam: (suspend (pages: List<PagedData<TPageParam?, TData>>) -> PageParam<TPageParam>)? = null,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
     ttl: kotlin.time.Duration? = null,
+    dedupingInterval: kotlin.time.Duration? = 2.seconds,
     query: suspend (page: TPageParam?) -> TData?,
 ): InfiniteQueryFactoryWithNoInput<TPageParam, TData, TError> =
     InfiniteQueryFactoryWithNoInput(
@@ -539,5 +611,6 @@ fun <TPageParam, TData, TError : Throwable> infiniteQueryFactoryOf(
         getPreviousPageParam = getPreviousPageParam,
         dispatcher = dispatcher,
         ttl = ttl,
+        dedupingInterval = dedupingInterval,
         query = query,
     )

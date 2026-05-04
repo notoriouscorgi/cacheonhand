@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -59,6 +61,8 @@ class CacheableFlowWithInput<TInput : FlowInput, TData, TError : Throwable>(
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: kotlin.time.Duration? = null,
     initialFetchState: FetchState = FetchState.IDLE,
+    private val tryMarkActive: suspend (TInput) -> Boolean = { true },
+    private val markInactive: suspend (TInput) -> Unit = {},
 ) {
     private val activeKey = MutableStateFlow(startingCacheKey)
     private val fetchStateFlow = MutableStateFlow(initialFetchState)
@@ -90,21 +94,26 @@ class CacheableFlowWithInput<TInput : FlowInput, TData, TError : Throwable>(
         onError: (suspend (TError) -> Unit)? = null,
     ) {
         activeKey.value = queryInput
-        withContext(dispatcher) {
-            fetchStateFlow.value = FetchState.LOADING
-            errorFlow.value = null
-            launchFlow
-                .invoke(queryInput)
-                .catch {
-                    errorFlow.value = it as TError?
-                    fetchStateFlow.value = FetchState.ERROR
-                    @Suppress("UNCHECKED_CAST")
-                    onError?.invoke(it as TError)
-                }.collect {
-                    cache.setMaybeWithTtl(queryInput, it, ttl)
-                    fetchStateFlow.value = FetchState.SUCCESS
-                    onEachSuccess?.invoke(it as TData)
-                }
+        if (!tryMarkActive(queryInput)) return
+        try {
+            withContext(dispatcher) {
+                fetchStateFlow.value = FetchState.LOADING
+                errorFlow.value = null
+                launchFlow
+                    .invoke(queryInput)
+                    .catch {
+                        errorFlow.value = it as TError?
+                        fetchStateFlow.value = FetchState.ERROR
+                        @Suppress("UNCHECKED_CAST")
+                        onError?.invoke(it as TError)
+                    }.collect {
+                        cache.setMaybeWithTtl(queryInput, it, ttl)
+                        fetchStateFlow.value = FetchState.SUCCESS
+                        onEachSuccess?.invoke(it as TData)
+                    }
+            }
+        } finally {
+            markInactive(queryInput)
         }
     }
 
@@ -120,6 +129,8 @@ class CacheableFlowWithNoInput<TData, TError : Throwable>(
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: kotlin.time.Duration? = null,
     initialFetchState: FetchState = FetchState.IDLE,
+    private val tryMarkActive: suspend () -> Boolean = { true },
+    private val markInactive: suspend () -> Unit = {},
 ) {
     private val fetchStateFlow = MutableStateFlow(initialFetchState)
     private val errorFlow = MutableStateFlow<TError?>(null)
@@ -146,21 +157,26 @@ class CacheableFlowWithNoInput<TData, TError : Throwable>(
         onEachSuccess: (suspend (TData) -> Unit)? = null,
         onError: (suspend (TError) -> Unit)? = null,
     ) {
-        withContext(dispatcher) {
-            fetchStateFlow.value = FetchState.LOADING
-            errorFlow.value = null
-            launchFlow
-                .invoke()
-                .catch {
-                    errorFlow.value = it as TError?
-                    fetchStateFlow.value = FetchState.ERROR
-                    @Suppress("UNCHECKED_CAST")
-                    onError?.invoke(it as TError)
-                }.collect {
-                    cache.setMaybeWithTtl(cacheKey, it, ttl)
-                    fetchStateFlow.value = FetchState.SUCCESS
-                    onEachSuccess?.invoke(it as TData)
-                }
+        if (!tryMarkActive()) return
+        try {
+            withContext(dispatcher) {
+                fetchStateFlow.value = FetchState.LOADING
+                errorFlow.value = null
+                launchFlow
+                    .invoke()
+                    .catch {
+                        errorFlow.value = it as TError?
+                        fetchStateFlow.value = FetchState.ERROR
+                        @Suppress("UNCHECKED_CAST")
+                        onError?.invoke(it as TError)
+                    }.collect {
+                        cache.setMaybeWithTtl(cacheKey, it, ttl)
+                        fetchStateFlow.value = FetchState.SUCCESS
+                        onEachSuccess?.invoke(it as TData)
+                    }
+            }
+        } finally {
+            markInactive()
         }
     }
 
@@ -180,6 +196,17 @@ class FlowFactoryWithInput<TInput : FlowInput, TData, TError : Throwable>(
     private val ttl: kotlin.time.Duration? = null,
     private val flow: (input: TInput) -> Flow<TData>,
 ) {
+    private val activeInputs = mutableSetOf<TInput>()
+    private val activeInputsLock = Mutex()
+
+    private suspend fun tryMarkActive(input: TInput): Boolean =
+        activeInputsLock.withLock {
+            if (activeInputs.contains(input)) false else { activeInputs.add(input); true }
+        }
+
+    private suspend fun markInactive(input: TInput): Unit =
+        activeInputsLock.withLock { activeInputs.remove(input) }
+
     fun create(
         startingCacheKey: TInput? = null,
         coroutineScope: CoroutineScope,
@@ -193,6 +220,8 @@ class FlowFactoryWithInput<TInput : FlowInput, TData, TError : Throwable>(
             startingCacheKey = startingCacheKey,
             ttl = ttl,
             initialFetchState = initialFetchState,
+            tryMarkActive = ::tryMarkActive,
+            markInactive = ::markInactive,
         )
 
     operator fun invoke(
@@ -224,6 +253,15 @@ class FlowFactoryWithNoInput<TData, TError : Throwable>(
     private val ttl: kotlin.time.Duration? = null,
     private val flow: () -> Flow<TData>,
 ) {
+    private var isActive = false
+    private val activeLock = Mutex()
+
+    private suspend fun tryMarkActive(): Boolean =
+        activeLock.withLock { if (isActive) false else { isActive = true; true } }
+
+    private suspend fun markInactive(): Unit =
+        activeLock.withLock { isActive = false }
+
     fun create(
         coroutineScope: CoroutineScope,
         initialFetchState: FetchState = FetchState.IDLE,
@@ -236,6 +274,8 @@ class FlowFactoryWithNoInput<TData, TError : Throwable>(
             dispatcher = dispatcher,
             ttl = ttl,
             initialFetchState = initialFetchState,
+            tryMarkActive = ::tryMarkActive,
+            markInactive = ::markInactive,
         )
 
     operator fun invoke(

@@ -94,6 +94,8 @@ class ComposableInfiniteQueryNoInput<TPageParam, TData, TError : Throwable>(
     ): RememberInfiniteQueryNoInputResult<TPageParam, TData, TError> = block(enabled, launchImmediately, onSuccess, onError)
 }
 
+fun <TInput : QueryInput, TPageParam, TData, TError : Throwable> InfiniteQueryFactoryWithInput<TInput, TPageParam, TData, TError>.forCompose() = composeInfiniteQueryFactoryOf(this)
+
 fun <TInput : QueryInput, TPageParam, TData, TError : Throwable> composeInfiniteQueryFactoryOf(
     factory: InfiniteQueryFactoryWithInput<TInput, TPageParam, TData, TError>,
 ): ComposableInfiniteQuery<TInput, TPageParam, TData, TError> {
@@ -137,6 +139,8 @@ fun <TInput : QueryInput, TPageParam, TData, TError : Throwable> composeInfinite
         rememberInfiniteQuery(input, enabled, launchImmediately, onSuccess, onError)
     }
 }
+
+fun <TPageParam, TData, TError : Throwable> InfiniteQueryFactoryWithNoInput<TPageParam, TData, TError>.forCompose() = composeInfiniteQueryFactoryOf(this)
 
 fun <TPageParam, TData, TError : Throwable> composeInfiniteQueryFactoryOf(
     factory: InfiniteQueryFactoryWithNoInput<TPageParam, TData, TError>,

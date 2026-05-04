@@ -85,6 +85,8 @@ class ComposableFireAndForgetMutationNoInput<TError : Throwable>(
     operator fun invoke(): RememberFireAndForgetMutationNoInputResult<TError> = block()
 }
 
+fun <TInput : MutationInput, TData, TError : Throwable> MutationFactoryWithInput<TInput, TData, TError>.forCompose() = composeMutationFactoryOf(this)
+
 fun <TInput : MutationInput, TData, TError : Throwable> composeMutationFactoryOf(
     factory: MutationFactoryWithInput<TInput, TData, TError>,
 ): ComposableMutation<TInput, TData, TError> =
@@ -98,6 +100,8 @@ fun <TInput : MutationInput, TData, TError : Throwable> composeMutationFactoryOf
             mutate = instance::mutate,
         )
     }
+
+fun <TData, TError : Throwable> MutationFactoryWithNoInput<TData, TError>.forCompose() = composeMutationFactoryOf(this)
 
 fun <TData, TError : Throwable> composeMutationFactoryOf(
     factory: MutationFactoryWithNoInput<TData, TError>,
@@ -113,6 +117,8 @@ fun <TData, TError : Throwable> composeMutationFactoryOf(
         )
     }
 
+fun <TInput : MutationInput, TError : Throwable> FireAndForgetMutationFactoryWithInput<TInput, TError>.forCompose() = composeMutationFactoryOf(this)
+
 fun <TInput : MutationInput, TError : Throwable> composeMutationFactoryOf(
     factory: FireAndForgetMutationFactoryWithInput<TInput, TError>,
 ): ComposableFireAndForgetMutation<TInput, TError> =
@@ -125,6 +131,8 @@ fun <TInput : MutationInput, TError : Throwable> composeMutationFactoryOf(
             mutate = instance::mutate,
         )
     }
+
+fun <TError : Throwable> FireAndForgetMutationFactoryWithNoInput<TError>.forCompose() = composeMutationFactoryOf(this)
 
 fun <TError : Throwable> composeMutationFactoryOf(
     factory: FireAndForgetMutationFactoryWithNoInput<TError>,

@@ -69,6 +69,8 @@ class ComposableFlowNoInput<TData, TError : Throwable>(
     ): RememberFlowNoInputResult<TData, TError> = block(enabled, launchImmediately, onEachSuccess, onError)
 }
 
+fun <TInput : FlowInput, TData, TError : Throwable> FlowFactoryWithInput<TInput, TData, TError>.forCompose() = composeFlowFactoryOf(this)
+
 fun <TInput : FlowInput, TData, TError : Throwable> composeFlowFactoryOf(
     factory: FlowFactoryWithInput<TInput, TData, TError>,
 ): ComposableFlow<TInput, TData, TError> {
@@ -108,6 +110,8 @@ fun <TInput : FlowInput, TData, TError : Throwable> composeFlowFactoryOf(
         rememberFlow(input, enabled, launchImmediately, onEachSuccess, onError)
     }
 }
+
+fun <TData, TError : Throwable> FlowFactoryWithNoInput<TData, TError>.forCompose() = composeFlowFactoryOf(this)
 
 fun <TData, TError : Throwable> composeFlowFactoryOf(
     factory: FlowFactoryWithNoInput<TData, TError>,

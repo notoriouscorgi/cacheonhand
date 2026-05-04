@@ -6,6 +6,7 @@ import io.github.notoriouscorgi.cacheonhand.CacheableInput.QueryInput
 import io.github.notoriouscorgi.cacheonhand.OnHandCache
 import io.github.notoriouscorgi.cacheonhand.operations.RefetchableFactory.RefetchableFactoryWithInput
 import io.github.notoriouscorgi.cacheonhand.operations.RefetchableFactory.RefetchableFactoryWithNoInput
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,8 +18,13 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 data class CacheableQueryResult<TData, TError : Throwable>(
     override val fetchState: FetchState,
@@ -28,7 +34,7 @@ data class CacheableQueryResult<TData, TError : Throwable>(
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CacheableQueryWithInput<TInput : QueryInput, TData, TError : Throwable>(
-    private val coroutineScope: CoroutineScope,
+    coroutineScope: CoroutineScope,
     private val launchQuery: suspend (input: TInput) -> TData?,
     startingCacheKey: TInput? = null,
     private val cache: OnHandCache,
@@ -152,8 +158,40 @@ class QueryFactoryWithInput<TInput : QueryInput, TData, TError : Throwable>(
     private val cache: OnHandCache,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: Duration? = null,
+    private val dedupingInterval: Duration? = 2.seconds,
+    internal val timeSource: TimeSource = TimeSource.Monotonic,
     private val query: suspend (input: TInput) -> TData,
 ) : RefetchableFactoryWithInput<TInput> {
+    private val inFlight = mutableMapOf<TInput, Pair<CompletableDeferred<TData>, TimeMark>>()
+    private val inFlightLock = Mutex()
+
+    internal suspend fun dedupedQuery(input: TInput): TData {
+        val (deferred, isNew) =
+            inFlightLock.withLock {
+                val existing = inFlight[input]
+                val interval = dedupingInterval
+                if (existing != null && (interval == null || existing.second.elapsedNow() <= interval)) {
+                    Pair(existing.first, false)
+                } else {
+                    val completable = CompletableDeferred<TData>()
+                    inFlight[input] = Pair(completable, timeSource.markNow())
+                    Pair(completable, true)
+                }
+            }
+        if (isNew) {
+            try {
+                deferred.complete(query(input))
+            } catch (e: Throwable) {
+                deferred.completeExceptionally(e)
+            } finally {
+                inFlightLock.withLock {
+                    if (inFlight[input]?.first === deferred) inFlight.remove(input)
+                }
+            }
+        }
+        return deferred.await()
+    }
+
     fun create(
         startingCacheKey: TInput? = null,
         coroutineScope: CoroutineScope,
@@ -161,7 +199,7 @@ class QueryFactoryWithInput<TInput : QueryInput, TData, TError : Throwable>(
     ): CacheableQueryWithInput<TInput, TData, TError> =
         CacheableQueryWithInput(
             coroutineScope = coroutineScope,
-            launchQuery = query,
+            launchQuery = ::dedupedQuery,
             cache = cache,
             dispatcher = dispatcher,
             startingCacheKey = startingCacheKey,
@@ -177,7 +215,7 @@ class QueryFactoryWithInput<TInput : QueryInput, TData, TError : Throwable>(
 
     override suspend fun refetch(input: TInput) {
         withContext(dispatcher) {
-            cache.setMaybeWithTtl(input, query(input), ttl)
+            cache.setMaybeWithTtl(input, dedupedQuery(input), ttl)
         }
     }
 
@@ -203,15 +241,47 @@ class QueryFactoryWithNoInput<TData, TError : Throwable>(
     private val cacheKey: QueryInput,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ttl: Duration? = null,
+    private val dedupingInterval: Duration? = 2.seconds,
+    internal val timeSource: TimeSource = TimeSource.Monotonic,
     private val query: suspend () -> TData,
 ) : RefetchableFactoryWithNoInput {
+    private var inFlight: Pair<CompletableDeferred<TData>, TimeMark>? = null
+    private val inFlightLock = Mutex()
+
+    internal suspend fun dedupedQuery(): TData {
+        val (deferred, isNew) =
+            inFlightLock.withLock {
+                val existing = inFlight
+                val interval = dedupingInterval
+                if (existing != null && (interval == null || existing.second.elapsedNow() <= interval)) {
+                    Pair(existing.first, false)
+                } else {
+                    val completable = CompletableDeferred<TData>()
+                    inFlight = Pair(completable, timeSource.markNow())
+                    Pair(completable, true)
+                }
+            }
+        if (isNew) {
+            try {
+                deferred.complete(query())
+            } catch (e: Throwable) {
+                deferred.completeExceptionally(e)
+            } finally {
+                inFlightLock.withLock {
+                    if (inFlight?.first === deferred) inFlight = null
+                }
+            }
+        }
+        return deferred.await()
+    }
+
     fun create(
         coroutineScope: CoroutineScope,
         initialFetchState: FetchState = FetchState.IDLE,
     ): CacheableQueryWithNoInput<TData, TError> =
         CacheableQueryWithNoInput(
             coroutineScope = coroutineScope,
-            launchQuery = query,
+            launchQuery = ::dedupedQuery,
             cacheKey = cacheKey,
             cache = cache,
             dispatcher = dispatcher,
@@ -226,7 +296,7 @@ class QueryFactoryWithNoInput<TData, TError : Throwable>(
 
     override suspend fun refetch() {
         withContext(dispatcher) {
-            cache.setMaybeWithTtl(cacheKey, query(), ttl)
+            cache.setMaybeWithTtl(cacheKey, dedupedQuery(), ttl)
         }
     }
 }
@@ -242,8 +312,16 @@ fun <TInput : QueryInput, TData, TError : Throwable> queryFactoryOf(
     cache: OnHandCache,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
     ttl: Duration? = null,
+    dedupingInterval: Duration? = 2.seconds,
     query: suspend (input: TInput) -> TData,
-): QueryFactoryWithInput<TInput, TData, TError> = QueryFactoryWithInput(cache = cache, dispatcher = dispatcher, ttl = ttl, query = query)
+): QueryFactoryWithInput<TInput, TData, TError> =
+    QueryFactoryWithInput(
+        cache = cache,
+        dispatcher = dispatcher,
+        ttl = ttl,
+        dedupingInterval = dedupingInterval,
+        query = query,
+    )
 
 /**
  * Creates a [QueryFactoryWithNoInput].
@@ -257,6 +335,14 @@ fun <TInput : QueryInput, TData, TError : Throwable> queryFactoryOf(
     cacheKey: TInput,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
     ttl: Duration? = null,
+    dedupingInterval: Duration? = 2.seconds,
     query: suspend () -> TData,
 ): QueryFactoryWithNoInput<TData, TError> =
-    QueryFactoryWithNoInput(cache = cache, cacheKey = cacheKey, dispatcher = dispatcher, ttl = ttl, query = query)
+    QueryFactoryWithNoInput(
+        cache = cache,
+        cacheKey = cacheKey,
+        dispatcher = dispatcher,
+        ttl = ttl,
+        dedupingInterval = dedupingInterval,
+        query = query,
+    )

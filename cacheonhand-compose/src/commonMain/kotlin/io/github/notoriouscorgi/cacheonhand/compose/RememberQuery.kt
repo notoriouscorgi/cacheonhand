@@ -42,6 +42,8 @@ class ComposableQuery<TInput : QueryInput, TData, TError : Throwable>(
     ): RememberQueryResult<TInput, TData, TError> = block(input, enabled, launchImmediately, refetchInterval, onSuccess, onError)
 }
 
+fun <TInput : QueryInput, TData, TError : Throwable> QueryFactoryWithInput<TInput, TData, TError>.forCompose() = composeQueryFactoryOf(this)
+
 fun <TInput : QueryInput, TData, TError : Throwable> composeQueryFactoryOf(
     factory: QueryFactoryWithInput<TInput, TData, TError>,
 ): ComposableQuery<TInput, TData, TError> {
@@ -119,6 +121,8 @@ class ComposableQueryNoInput<TData, TError : Throwable>(
         onError: (suspend (error: TError) -> Unit)? = null,
     ): RememberQueryNoInputResult<TData, TError> = block(enabled, launchImmediately, refetchInterval, onSuccess, onError)
 }
+
+fun <TData, TError : Throwable> QueryFactoryWithNoInput<TData, TError>.forCompose() = composeQueryFactoryOf(this)
 
 fun <TData, TError : Throwable> composeQueryFactoryOf(
     factory: QueryFactoryWithNoInput<TData, TError>,

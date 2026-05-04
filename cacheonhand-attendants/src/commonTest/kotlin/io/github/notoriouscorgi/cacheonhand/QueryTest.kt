@@ -11,8 +11,8 @@ import io.github.notoriouscorgi.cacheonhand.operations.cachedDataState
 import io.github.notoriouscorgi.cacheonhand.operations.queryFactoryOf
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.BeforeTest
@@ -348,11 +348,12 @@ class QueryTest {
     fun `Test that query with initialFetchState LOADING starts in LOADING`() =
         runTest {
             cache.clear()
-            val queryInstance = testQueryFactoryWithInput.create(
-                FakeInput(3),
-                backgroundScope,
-                initialFetchState = FetchState.LOADING,
-            )
+            val queryInstance =
+                testQueryFactoryWithInput.create(
+                    FakeInput(3),
+                    backgroundScope,
+                    initialFetchState = FetchState.LOADING,
+                )
             assertEquals(FetchState.LOADING, queryInstance.result.value.fetchState)
             assertEquals(CacheAndFetchState.NO_DATA_CACHED_AND_LOADING, queryInstance.result.value.cachedDataState)
         }
@@ -416,13 +417,14 @@ class QueryTest {
             cache.clear()
             val gate = CompletableDeferred<Unit>()
             var shouldSuspend = false
-            val slowFactory = QueryFactoryWithInput<FakeInput, Int, Exception>(
-                cache = cache,
-                dispatcher = Dispatchers.Unconfined,
-            ) { input ->
-                if (shouldSuspend) gate.await()
-                input.value + 2
-            }
+            val slowFactory =
+                QueryFactoryWithInput<FakeInput, Int, Exception>(
+                    cache = cache,
+                    dispatcher = Dispatchers.Unconfined,
+                ) { input ->
+                    if (shouldSuspend) gate.await()
+                    input.value + 2
+                }
 
             val queryInstance = slowFactory.create(FakeInput(3), backgroundScope)
 
@@ -446,9 +448,10 @@ class QueryTest {
     fun `Test that cachedDataState shows NO_DATA_CACHED_AND_SUCCESS when fetch returns null`() =
         runTest {
             cache.clear()
-            val nullFactory = queryFactoryOf<FakeInput, Int?, Exception>(
-                cache = cache,
-            ) { _ -> null }
+            val nullFactory =
+                queryFactoryOf<FakeInput, Int?, Exception>(
+                    cache = cache,
+                ) { _ -> null }
 
             val queryInstance = nullFactory.create(null, backgroundScope)
             queryInstance.fetch(FakeInput(3))

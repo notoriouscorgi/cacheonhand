@@ -17,17 +17,102 @@ dependencies {
 
 ## Core Concepts
 
-### Factory Pattern
+With just `CacheOnHand`, we already have a way to centralize data updatess and
+publish results to observers right away. But how should we operate on our cache predictably? That's
+where the `Attendants` come in.
 
-Define your data operations once as factories, then create instances wherever needed. Each factory wraps a suspend
-lambda and manages caching, state tracking, and error handling.
+### The `Attendants`
+
+The `Attendants` library is a set of prescriptive patterns for connecting your global cache to common data fetching,
+mutation and subscription patterns. You will find these in the form of:
+
+`CacheableQuery` via `queryFactoryOf()`
+
+- For normal data fetching (HTTP GET's, etc)
+
+`CacheableInfiniteQuery`  via `infiniteQueryFactoryOf()`
+
+- For fetching paginated data
+
+`CacheableFlow`  via `flowFactoryOf()`
+
+- For subscribing to data
+
+`CacheableMutation` via `mutationFactoryOf()`
+
+- For changing data else where (HTTP POST / PUT / PATCH etc)
+- Additionally, can define `dependentActions` for performing `refetch()`es of
+  queries
+
+Each factory requires you to define:
+
+- Your data fetching logic
+- The shape of your cache key (should be the same as the input to your fetching logic)
+
+Optionally, you can define:
+
+- A TTL for determining when a cache value should be evicted
+- Any dependent actions that should *always* happen on success (only for mutations)
+
+Factories provide the following outputs:
+
+1) An `invoke()` method, which creates a single `CacheableX` instance, for calling and observing your data
+2) A typed `optimisticUpdater` method for query and infinite query data, usually useful during mutations
+3) A typed `refetch` method, also useful for once mutations complete
+
+Once defined, a factory can be instantiated once, or many times in your app. The instances
+provide the following:
+
+- A function to `fetch()` , `mutate()`, or `launch()` your interaction, and subsequently interact
+  with the cache appropriately
+- A `StateFlow` to observe the data's `FetchState`, `Error` state, and successful `Data` value
+- `onSuccess` and `onError` hooks to perform follow up actions
+- The handling of `dependentActions` for mutations
+-
+
+### Why this is powerful
+
+When organized this way, organization of data services becomes clean because:
+
+- Your cache is the definitive center of your data flow operation, which maintains one way data flow
+- All data fetching definitions are defined once, usable in many places
+- Factories can be easily injected via DI and used to create `dependentActions`, `optimisticUpdate`s, or data `refetch`
+  es
+- `Cacheable` instances control the data fetching lifecycle, operate on your cache, and provide data observabilty
+  so that you don't have to keep redefining similar operations
+- Mutations can now have defined `dependentActions`, making it easy to connect a query refetch to it's
+  mutation
+
+# `queryFactoryOf()`
+
+A query factory is the top level definition for a plan to fetch "data". This frequently is an api call, but can be any
+suspend function that returns data. There are 2 versions of `queryFactoryOf`; 1 that accepts input data to fetch
+and 1 that requires no input data to fetch. The query factory definition allows your instances
+to understand how a query is fetched, what cache key it should overwrite, and how long data for a cache key
+is valid.
+
+### `queryFactoryOf()` with input example
+
+Given I have an api fetch that returns a `User` based on `UserInput`, and can throw and `ApiException`:
 
 ```kotlin
+// Defined or injected at the top of my application to survive the app lifecycle
 val cache = OnHandCache()
 
-// Define once
-val getUserFactory = queryFactoryOf<GetUserInput, User, ApiException>(
-    cache = cache,
+// Define my input
+data class GetUserInput(
+    val id: Int,
+) {
+    override val identifier: String = "/user/$id"
+}
+// Defined outside the application and injected at callsites
+val GetUser = queryFactoryOf<GetUserInput, User, ApiException>(
+    cache = cache, // or injectable
+    // The cache will evict this on the subsequent cache operation after the TTL 
+    ttl = 10.minutes,
+    // Concurrent fetches for the same key within this window share one in-flight request.
+    // Set to null to disable deduplication entirely.
+    dedupingInterval = 2.seconds
 ) { input ->
     // Choose your appropriate dispatcher here
     withContext(Dispatchers.IO) {
@@ -35,28 +120,590 @@ val getUserFactory = queryFactoryOf<GetUserInput, User, ApiException>(
     }
 }
 
-// Use anywhere
-val query = getUserFactory.create(
-    startingCacheKey = GetUserInput("123"),
-    coroutineScope = viewModelScope,
-)
-// Fetch data, the input can change however you need
-query.fetch(GetUserInput("123"))
+// Use in a ViewModel or elsewhere
+class MyViewModel : ViewModel {
+    // Contains fetchState, data, error information as a flow
+    private val userResult = GetUser(
+        // Look for this cache key to start. It's important to match this with your user input 
+        // for the actual fetch
+        startingCacheKey = GetUserInput("123"),
+        coroutineScope = viewModelScope,
+        // Set your FetchState to LOADING right away if you plan to query in an init {} block
+        initialFetchState = FetchState.LOADING
+    )
 
-// Collect results where appropriate
-query.result.collect { result ->
-    when (result.fetchState) {
-        FetchState.IDLE -> { /* waiting */
-        }
-        FetchState.LOADING -> { /* show spinner */
-        }
-        FetchState.SUCCESS -> { /* use result.data */
-        }
-        FetchState.ERROR -> { /* handle result.error */
+    init {
+        // Run your query
+        viewModelScope.launch {
+            // Collect results where appropriate
+            userResult.result.collect { result ->
+                when (result.fetchState) {
+                    FetchState.IDLE -> { /* waiting */
+                    }
+                    FetchState.LOADING -> { /* show spinner */
+                    }
+                    FetchState.SUCCESS -> { /* use result.data */
+                    }
+                    FetchState.ERROR -> { /* handle result.error */
+                    }
+                }
+            }
+
+            userResult.fetch(
+                queryInput = GetUserInput("123"),
+                onSuccess = { data -> doAnAction(data) },
+                onError = { error -> logAnError(error) }
+            )
         }
     }
 }
 ```
+
+### `queryFactoryOf()` without input example
+
+Given I have an api fetch that always returns the currently-authenticated `User` (no input id needed):
+
+```kotlin
+data class CurrentUserKey(val id: String = "me") : CacheableInput.QueryInput {
+    override val identifier = "GET /api/me"
+}
+
+val GetCurrentUser = queryFactoryOf<CurrentUserKey, User, ApiException>(
+    cache = cache,
+    cacheKey = CurrentUserKey(), // fixed cache key — every caller shares this entry
+    ttl = 5.minutes
+) {
+    withContext(Dispatchers.IO) {
+        api.getCurrentUser()
+    }
+}
+
+class MyViewModel : ViewModel {
+    private val currentUserResult = GetCurrentUser(
+        coroutineScope = viewModelScope,
+        initialFetchState = FetchState.LOADING
+    )
+
+    init {
+        viewModelScope.launch {
+            currentUserResult.result.collect { result ->
+                when (result.fetchState) {
+                    FetchState.IDLE -> { /* waiting */
+                    }
+                    FetchState.LOADING -> { /* show spinner */
+                    }
+                    FetchState.SUCCESS -> { /* use result.data */
+                    }
+                    FetchState.ERROR -> { /* handle result.error */
+                    }
+                }
+            }
+
+            currentUserResult.fetch(
+                onSuccess = { user -> doAnAction(user) },
+                onError = { error -> logAnError(error) }
+            )
+        }
+    }
+}
+```
+
+---
+
+# mutationFactoryOf()
+
+`mutationFactoryOf()`
+A mutation factory defines an operation that most likely writes data elsewhere — typically a POST, PUT, or DELETE — .
+In addition, mutations are special in that they can be provided `optimisticUpdate`s, allowing for cache manipulation
+*BEFORE* a mutation runs when you need a snappier UI experience
+
+There are 4 variants: with or without input, and with or without a data return value.
+
+### `mutationFactoryOf()` with input example
+
+Given I have an api call that updates a `User` given `UpdateUserInput` and returns the updated `User`:
+
+```kotlin
+val UpdateUser = mutationFactoryOf<UpdateUserInput, User, ApiException>(
+    cache = cache,
+    // Run these suspend functions after a successful mutation, e.g. invalidate related queries
+    dependentActions = listOf { updatedUser -> analytics.track("user_updated", updatedUser.id) }
+) { input ->
+    withContext(Dispatchers.IO) {
+        api.updateUser(input.userId, input.name)
+    }
+}
+
+class MyViewModel : ViewModel {
+    private val updateUserMutation = UpdateUser()
+
+    init {
+        viewModelScope.launch {
+            updateUserMutation.result.collect { result ->
+                when (result.fetchState) {
+                    FetchState.IDLE -> { /* waiting */
+                    }
+                    FetchState.LOADING -> { /* show saving indicator */
+                    }
+                    FetchState.SUCCESS -> { /* use result.data (the updated User) */
+                    }
+                    FetchState.ERROR -> { /* handle result.error */
+                    }
+                }
+            }
+        }
+    }
+
+    fun onSave(userId: String, name: String) {
+        viewModelScope.launch {
+            updateUserMutation.mutate(
+                input = UpdateUserInput(userId, name),
+                optimisticUpdate = { input ->
+                    // Instantly update the cache before the API responds
+                    GetUser.optimisticUpdater(GetUserInput(input.userId)) { current ->
+                        current?.copy(name = input.name)
+                    }
+                },
+                onSuccess = { updatedUser ->
+                    // Refresh any other queries that show this user
+                    GetUser.refetch(GetUserInput(updatedUser.id))
+                },
+                onError = { error ->
+                    // Cache automatically rolled back to its pre-optimistic state
+                    logError(error)
+                }
+            )
+        }
+    }
+}
+```
+
+### `mutationFactoryOf()` without input example
+
+Given I have an api call that logs the user out (no input needed) and returns a confirmation `LogoutResult`:
+
+```kotlin
+val Logout = mutationFactoryOf<LogoutResult, ApiException>(cache = cache) {
+    withContext(Dispatchers.IO) {
+        api.logout()
+    }
+}
+
+class MyViewModel : ViewModel {
+    private val logoutMutation = Logout()
+
+    init {
+        viewModelScope.launch {
+            logoutMutation.result.collect { result ->
+                when (result.fetchState) {
+                    FetchState.IDLE -> { /* waiting */
+                    }
+                    FetchState.LOADING -> { /* show spinner */
+                    }
+                    FetchState.SUCCESS -> { /* use result.data (LogoutResult) */
+                    }
+                    FetchState.ERROR -> { /* handle result.error */
+                    }
+                }
+            }
+        }
+    }
+
+    fun onLogoutClick() {
+        viewModelScope.launch {
+            logoutMutation.mutate(
+                optimisticUpdate = {
+                    // Optionally clear user-related cache entries before the API call
+                    GetCurrentUser.optimisticUpdater { _ -> null }
+                },
+                onSuccess = { _ -> navigateToLogin() },
+                onError = { error -> showError(error) }
+            )
+        }
+    }
+}
+```
+
+### `mutationFactoryWithNoOutputOf()` with input example
+
+Given I have an api call that deletes a post by id and returns nothing meaningful:
+
+```kotlin
+val DeletePost = mutationFactoryWithNoOutputOf<DeletePostInput, ApiException>(
+    cache = cache,
+    // dependentActions on fire-and-forget mutations take no data parameter
+    dependentActions = listOf { analytics.track("post_deleted") }
+) { input ->
+    withContext(Dispatchers.IO) {
+        api.deletePost(input.postId)
+    }
+}
+
+class MyViewModel : ViewModel {
+    private val deletePostMutation = DeletePost()
+
+    init {
+        viewModelScope.launch {
+            deletePostMutation.result.collect { result ->
+                when (result.fetchState) {
+                    FetchState.IDLE -> { /* waiting */
+                    }
+                    FetchState.LOADING -> { /* show deleting indicator */
+                    }
+                    FetchState.SUCCESS -> { /* done — no data returned */
+                    }
+                    FetchState.ERROR -> { /* handle result.error */
+                    }
+                }
+            }
+        }
+    }
+
+    fun onDeleteClick(postId: String) {
+        viewModelScope.launch {
+            deletePostMutation.mutate(
+                input = DeletePostInput(postId),
+                optimisticUpdate = { input ->
+                    // Remove the post from the feed cache immediately
+                    FeedQuery.optimisticUpdater(FeedInput()) { currentFeed ->
+                        currentFeed?.filter { it.id != input.postId }
+                    }
+                },
+                onSuccess = { navigateBack() },
+                onError = { error ->
+                    // Feed cache automatically restored — no manual rollback needed
+                    showError(error)
+                }
+            )
+        }
+    }
+}
+```
+
+### `mutationFactoryWithNoOutputOf()` without input example
+
+Given I have an api call that clears all notifications and returns nothing:
+
+```kotlin
+val ClearNotifications = mutationFactoryWithNoOutputOf<ApiException>(
+    cache = cache,
+    // dependentActions on fire-and-forget mutations take no data parameter
+    dependentActions = listOf { analytics.track("notifications_cleared") }
+) {
+    withContext(Dispatchers.IO) {
+        api.clearAllNotifications()
+    }
+}
+
+class MyViewModel : ViewModel {
+    private val clearMutation = ClearNotifications()
+
+    init {
+        viewModelScope.launch {
+            clearMutation.result.collect { result ->
+                when (result.fetchState) {
+                    FetchState.IDLE -> { /* waiting */
+                    }
+                    FetchState.LOADING -> { /* show clearing indicator */
+                    }
+                    FetchState.SUCCESS -> { /* done — no data returned */
+                    }
+                    FetchState.ERROR -> { /* handle result.error */
+                    }
+                }
+            }
+        }
+    }
+
+    fun onClearAll() {
+        viewModelScope.launch {
+            clearMutation.mutate(
+                optimisticUpdate = {
+                    // Clear the notifications list in cache before the API call
+                    NotificationsQuery.optimisticUpdater { _ -> emptyList() }
+                },
+                onSuccess = { showToast("Cleared") },
+                onError = { error -> showError(error) }
+            )
+        }
+    }
+}
+```
+
+---
+
+# `flowFactoryOf()`
+
+A flow factory subscribes to a reactive data source — WebSocket, SSE, or any `Flow<T>` — and writes each emission
+to the cache. Every subscriber observing the same cache key sees updates in real time.
+There are 2 versions: with input (e.g., ticker symbol) and without input (e.g., a single global event stream).
+
+### `flowFactoryOf()` with input example
+
+Given I have a WebSocket that streams live `Price` updates for a given ticker symbol:
+
+```kotlin
+val PriceStream = flowFactoryOf<PriceStreamInput, Price, ApiException>(cache = cache) { input ->
+    api.priceWebSocket(input.ticker) // returns Flow<Price>
+}
+
+class MyViewModel : ViewModel {
+    private val priceStream = PriceStream(
+        startingCacheKey = PriceStreamInput("AAPL"), // pre-populate from cache if present
+        coroutineScope = viewModelScope
+    )
+
+    init {
+        viewModelScope.launch {
+            priceStream.result.collect { result ->
+                when (result.fetchState) {
+                    FetchState.IDLE -> { /* not yet launched */
+                    }
+                    FetchState.LOADING -> { /* waiting for first emission */
+                    }
+                    FetchState.SUCCESS -> { /* use result.data (latest Price) */
+                    }
+                    FetchState.ERROR -> { /* stream errored — result.data holds last good value */
+                    }
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            priceStream.launch(
+                queryInput = PriceStreamInput("AAPL"),
+                onEachSuccess = { price -> /* called on every emission */ },
+                onError = { error -> /* stream closed with error */ }
+            )
+        }
+    }
+}
+```
+
+### `flowFactoryOf()` without input example
+
+Given I have a subscription like service (server-sent event stream) that broadcasts global `AppNotification` events to
+all users:
+
+```kotlin
+data class NotificationStreamKey(val id: String = "notifications") : CacheableInput.FlowInput {
+    override val identifier = "SSE /api/notifications"
+}
+
+val NotificationStream = flowFactoryOf<NotificationStreamKey, AppNotification, ApiException>(
+    cache = cache,
+    cacheKey = NotificationStreamKey()
+) {
+    api.notificationStream() // returns Flow<AppNotification>
+}
+
+class MyViewModel : ViewModel {
+    private val stream = NotificationStream(coroutineScope = viewModelScope)
+
+    init {
+        viewModelScope.launch {
+            stream.result.collect { result ->
+                when (result.fetchState) {
+                    FetchState.IDLE -> { /* not yet launched */
+                    }
+                    FetchState.LOADING -> { /* waiting for first emission */
+                    }
+                    FetchState.SUCCESS -> { /* use result.data (latest AppNotification) */
+                    }
+                    FetchState.ERROR -> { /* stream errored */
+                    }
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            stream.launch(
+                onEachSuccess = { notification -> showBadge(notification) },
+                onError = { error -> reconnect() }
+            )
+        }
+    }
+}
+```
+
+### Accumulating flow emissions
+
+By default each emission overwrites the cached value. Use `scan()` on your flow before passing it to the factory
+to accumulate a history — useful for chat rooms, event logs, or any append-only stream:
+
+```kotlin
+val ChatHistory = flowFactoryOf<ChatRoomInput, List<ChatMessage>, ApiException>(cache = cache) { input ->
+    chatWebSocket(input.roomId)
+        .scan(emptyList()) { acc, message -> acc + message }
+}
+
+// Each emission replaces the cache entry with the full accumulated list.
+// All subscribers observing the same cache key see the complete history.
+// To cap the size:
+// .scan(emptyList()) { acc, message -> (acc + message).takeLast(100) }
+```
+
+---
+
+# `infiniteQueryFactoryOf()`
+
+An infinite query factory handles paginated data — loading the next or previous page on demand, with each page
+appended to a running list in the cache. There are 2 versions: with input (e.g., search term or category) and
+without input (e.g., a global activity feed).
+
+### `infiniteQueryFactoryOf()` with input example
+
+Given I have a paginated api that returns a page of `FeedItem`s given a `FeedInput` and an `Int` page number:
+
+```kotlin
+val Feed = infiniteQueryFactoryOf<FeedInput, Int, FeedItem, ApiException>(
+    cache = cache,
+    initialPageParam = 1,
+    getNextPageParam = { pages ->
+        val last = pages.lastOrNull()?.page ?: 0
+        if (last >= MAX_PAGES) PageParam.None else PageParam.Value(last + 1)
+    },
+    getPreviousPageParam = { pages ->
+        val first = pages.firstOrNull()?.page ?: 0
+        if (first <= 1) PageParam.None else PageParam.Value(first - 1)
+    }
+) { input, page ->
+    withContext(Dispatchers.IO) {
+        api.getFeed(category = input.category, page = page)
+    }
+}
+
+class MyViewModel : ViewModel {
+    private val feed = Feed(
+        startingCacheKey = FeedInput("trending"),
+        coroutineScope = viewModelScope,
+        initialFetchState = FetchState.LOADING
+    )
+
+    init {
+        viewModelScope.launch {
+            feed.result.collect { result ->
+                when (result.fetchState) {
+                    FetchState.IDLE -> { /* waiting */
+                    }
+                    FetchState.LOADING -> { /* show skeleton */
+                    }
+                    FetchState.SUCCESS -> {
+                        // result.data is List<PagedData<Int?, FeedItem>>
+                        val items = result.data?.flatMap { listOfNotNull(it.data) }
+                        val canLoadMore = result.hasNextPage
+                        val canLoadPrev = result.hasPreviousPage
+                    }
+                    FetchState.ERROR -> { /* handle result.error */
+                    }
+                }
+            }
+
+            // Load the first page
+            feed.fetchNextPage(
+                queryInput = FeedInput("trending"),
+                onSuccess = { pageData -> /* pageData: PagedData<Int?, FeedItem>? */ },
+                onError = { error -> /* handle */ }
+            )
+        }
+    }
+
+    fun onScrolledToBottom() {
+        viewModelScope.launch {
+            feed.fetchNextPage(
+                queryInput = FeedInput("trending"),
+                onSuccess = { pageData -> /* pageData: PagedData<Int?, FeedItem>? */ },
+                onError = { error -> /* handle */ }
+            )
+        }
+    }
+
+    fun onScrolledToTop() {
+        viewModelScope.launch {
+            feed.fetchPreviousPage(
+                queryInput = FeedInput("trending"),
+                onSuccess = { pageData -> /* pageData: PagedData<Int?, FeedItem>? */ },
+                onError = { error -> /* handle */ }
+            )
+        }
+    }
+
+    fun onRefreshPage(page: Int) {
+        viewModelScope.launch {
+            // Replaces the page in-place if it exists, otherwise appends it
+            feed.fetchPage(
+                queryInput = FeedInput("trending"),
+                page = page,
+                onSuccess = { pageData -> /* pageData: PagedData<Int?, FeedItem>? */ },
+                onError = { error -> /* handle */ }
+            )
+        }
+    }
+}
+```
+
+### `infiniteQueryFactoryOf()` without input example
+
+Given I have a paginated api that returns a page of `ActivityItem`s for the current user (no input needed):
+
+```kotlin
+data class ActivityFeedKey(val id: String = "activity") : CacheableInput.QueryInput {
+    override val identifier = "GET /api/me/activity"
+}
+
+val ActivityFeed = infiniteQueryFactoryOf<Int, ActivityItem, ApiException>(
+    cache = cache,
+    cacheKey = ActivityFeedKey(),
+    initialPageParam = 1,
+    getNextPageParam = { pages ->
+        val last = pages.lastOrNull()?.page ?: 0
+        if (last >= MAX_PAGES) PageParam.None else PageParam.Value(last + 1)
+    }
+) { page ->
+    withContext(Dispatchers.IO) {
+        api.getActivity(page = page)
+    }
+}
+
+class MyViewModel : ViewModel {
+    private val activityFeed = ActivityFeed(coroutineScope = viewModelScope)
+
+    init {
+        viewModelScope.launch {
+            activityFeed.result.collect { result ->
+                val items = result.data?.flatMap { listOfNotNull(it.data) }
+                val canLoadMore = result.hasNextPage
+            }
+
+            activityFeed.fetchNextPage(
+                onSuccess = { pageData -> /* pageData: PagedData<Int?, ActivityItem>? */ },
+                onError = { error -> /* handle */ }
+            )
+        }
+    }
+
+    fun onScrolledToBottom() {
+        viewModelScope.launch {
+            activityFeed.fetchNextPage(
+                onSuccess = { pageData -> /* pageData: PagedData<Int?, ActivityItem>? */ },
+                onError = { error -> /* handle */ }
+            )
+        }
+    }
+
+    fun onRefreshPage(page: Int) {
+        viewModelScope.launch {
+            activityFeed.fetchPage(
+                page = page,
+                onSuccess = { pageData -> /* pageData: PagedData<Int?, ActivityItem>? */ },
+                onError = { error -> /* handle */ }
+            )
+        }
+    }
+}
+```
+
+---
 
 ### Cache Keys (CacheableInput)
 
@@ -100,229 +747,6 @@ enum class CacheAndFetchState {
 
 // Use the extension property
 val state = queryResult.cachedDataState
-```
-
-## Queries
-
-Fetch data on demand with automatic caching.
-
-### With Input
-
-```kotlin
-val getUserFactory = queryFactoryOf<GetUserInput, User, ApiException>(
-    cache = cache,
-    ttl = 5.minutes, // optional TTL
-) { input ->
-    withContext(Dispatchers.IO) {
-        api.getUser(input.userId)
-    }
-}
-
-// Create an instance
-val query = getUserFactory.create(
-    startingCacheKey = GetUserInput("123"), // optional, pre-populates from cache
-    coroutineScope = viewModelScope,
-)
-
-// Fetch
-query.fetch(
-    queryInput = GetUserInput("123"),
-    onSuccess = { user -> /* navigate, log, etc. */ },
-    onError = { error -> /* handle */ },
-)
-
-// Observe result reactively
-query.result.collect { /* CacheableQueryResult<User, ApiException> */ }
-```
-
-### Without Input
-
-For queries with a fixed cache key (e.g., current user, app config):
-
-```kotlin
-data class CurrentUserKey(val id: String = "me") : CacheableInput.QueryInput {
-    override val identifier = "GET /api/me"
-}
-
-val currentUserFactory = queryFactoryOf<CurrentUserKey, User, ApiException>(
-    cache = cache,
-    cacheKey = CurrentUserKey(),
-) {
-    withContext(Dispatchers.IO) {
-        api.getCurrentUser()
-    }
-}
-
-val query = currentUserFactory.create(coroutineScope = viewModelScope)
-query.fetch()
-```
-
-### Refetch from Factory
-
-Update the cache for a key without needing a query instance. Useful for refreshing query data after a mutation:
-
-```kotlin
-val updateUserFactory = mutationFactoryOf<UpdateUserInput, User, ApiException>(
-    cache = cache,
-) { input ->
-    withContext(Dispatchers.IO) {
-        api.updateUser(input.userId, input.name)
-    }
-}
-
-val mutation = updateUserFactory.create()
-
-mutation.mutate(
-    queryInput = UpdateUserInput("123", "New Name"),
-    onSuccess = { _ ->
-        // Refetch the user query so all subscribers see the updated data
-        getUserFactory.refetch(GetUserInput("123"))
-    },
-)
-```
-
-## Mutations
-
-Perform write operations with optimistic updates and rollback.
-
-### With Data Return
-
-```kotlin
-val updateUserFactory = mutationFactoryOf<UpdateUserInput, User, ApiException>(
-    cache = cache,
-) { input ->
-    withContext(Dispatchers.IO) {
-        api.updateUser(input.userId, input.name)
-    }
-}
-
-val mutation = updateUserFactory.create()
-
-mutation.mutate(
-    queryInput = UpdateUserInput("123", "New Name"),
-    optimisticUpdate = { input ->
-        // Instantly update the query cache before the API call
-        getUserFactory.optimisticUpdater(GetUserInput(input.userId)) { currentUser ->
-            currentUser?.copy(name = input.name) ?: User(name = input.name)
-        }
-    },
-    onSuccess = { updatedUser -> /* done */ },
-    onError = { error -> /* cache automatically rolled back */ },
-)
-```
-
-### Fire and Forget
-
-For mutations that don't return data:
-
-```kotlin
-val deleteUserFactory = mutationFactoryWithNoOutputOf<DeleteUserInput, ApiException>(
-    cache = cache,
-) { input ->
-    withContext(Dispatchers.IO) {
-        api.deleteUser(input.userId)
-    }
-}
-```
-
-### Without Input
-
-```kotlin
-val logoutFactory = mutationFactoryOf<Unit, ApiException>(cache = cache) {
-    withContext(Dispatchers.IO) {
-        api.logout()
-    }
-}
-```
-
-## Flows
-
-Subscribe to reactive data sources (SSE, WebSockets, etc.) with each emission cached.
-
-```kotlin
-val priceStreamFactory = flowFactoryOf<PriceStreamInput, Price, ApiException>(
-    cache = cache,
-) { input ->
-    api.priceWebSocket(input.ticker) // returns Flow<Price>
-}
-
-val flowInstance = priceStreamFactory.create(
-    startingCacheKey = PriceStreamInput("AAPL"),
-    coroutineScope = viewModelScope,
-)
-
-flowInstance.launch(
-    queryInput = PriceStreamInput("AAPL"),
-    onEachSuccess = { price -> /* called for every emission */ },
-    onError = { error -> /* stream errored */ },
-)
-```
-
-### Accumulating Emissions
-
-By default, each emission overwrites the previous cached value. To keep a history of emissions, use `scan()` or
-`runningFold()` on your flow:
-
-```kotlin
-val chatFactory = flowFactoryOf<ChatRoomInput, List<ChatMessage>, ApiException>(
-    cache = cache,
-) { input ->
-    chatWebSocket(input.roomId)
-        .scan(emptyList()) { acc, message -> acc + message }
-}
-```
-
-The cache stores the full accumulated list. Any subscriber reading the same cache key sees the complete history. To cap
-the size:
-
-```kotlin
-.scan(emptyList()) { acc, message -> (acc + message).takeLast(100) }
-```
-
-## Infinite Queries
-
-Paginated data with forward and backward navigation.
-
-```kotlin
-data class FeedInput(val category: String) : CacheableInput.QueryInput {
-    override val identifier = "GET /api/feed/$category"
-}
-
-val feedFactory = infiniteQueryFactoryOf<FeedInput, Int, FeedItem, ApiException>(
-    cache = cache,
-    initialPageParam = 1,
-    getNextPageParam = { pages ->
-        val lastPage = pages.lastOrNull()?.page ?: 0
-        if (lastPage >= 10) PageParam.None else PageParam.Value(lastPage + 1)
-    },
-    getPreviousPageParam = { pages ->  // optional, null = forward-only
-        val firstPage = pages.firstOrNull()?.page ?: 0
-        if (firstPage <= 1) PageParam.None else PageParam.Value(firstPage - 1)
-    },
-) { input, page ->
-    withContext(Dispatchers.IO) {
-        api.getFeed(input.category, page = page)
-    }
-}
-
-val infiniteQuery = feedFactory.create(
-    startingCacheKey = FeedInput("trending"),
-    coroutineScope = viewModelScope,
-)
-
-// Fetch pages
-infiniteQuery.fetchNextPage(FeedInput("trending"))
-infiniteQuery.fetchPreviousPage(FeedInput("trending"))
-
-// Replace a specific page in-place
-infiniteQuery.fetchPage(FeedInput("trending"), page = 3)
-
-// Check pagination state
-infiniteQuery.result.collect { result ->
-    val hasMore = result.hasNextPage
-    val canGoBack = result.hasPreviousPage
-    val pages: List<PagedData<Int?, FeedItem>>? = result.data
-}
 ```
 
 ## Recipes
@@ -375,19 +799,20 @@ Because the cache is the source of truth, multiple query instances observing the
 
 ```kotlin
 // Screen A
-val queryA = getUserFactory.create(GetUserInput("123"), screenAScope)
+val queryA = getUserFactory(GetUserInput("123"), screenAScope)
 
 // Screen B
-val queryB = getUserFactory.create(GetUserInput("123"), screenBScope)
+val queryB = getUserFactory(GetUserInput("123"), screenBScope)
 
 // When either screen fetches, both see the update
 queryA.fetch(GetUserInput("123"))
 // queryB.result also updates — they share the same cache entry
 ```
 
-### Stale-While-Revalidate with TTL
+### TTL
 
-Show cached data immediately, refetch in the background:
+TTL allows for refetches to happen automatically on the given TTL cadence. This is useful
+for polling workflows
 
 ```kotlin
 val factory = queryFactoryOf<MyInput, Data, Exception>(
@@ -420,29 +845,12 @@ val factory = queryFactoryOf<MyInput, Data, Exception>(cache = cache) { input ->
 complete sequentially so that state transitions (LOADING -> SUCCESS/ERROR) are correct. However, `launch`/`async` is
 fine inside `onSuccess`/`onError` callbacks — those run after state transitions are complete.
 
-### CacheAndFetchState for UI
-
-Use `cachedDataState` to drive UI with a single `when` expression:
-
-```kotlin
-when (query.result.value.cachedDataState) {
-    CacheAndFetchState.NO_DATA_CACHED_AND_IDLE -> ShowEmpty()
-    CacheAndFetchState.NO_DATA_CACHED_AND_LOADING -> ShowSkeleton()
-    CacheAndFetchState.DATA_CACHED_AND_LOADING -> ShowDataWithRefreshIndicator(data)
-    CacheAndFetchState.DATA_CACHED_AND_SUCCESS -> ShowData(data)
-    CacheAndFetchState.DATA_CACHED_AND_ERROR -> ShowDataWithErrorBanner(data, error)
-    CacheAndFetchState.NO_DATA_CACHED_AND_ERROR -> ShowErrorScreen(error)
-    CacheAndFetchState.DATA_CACHED_AND_IDLE -> ShowData(data)
-    CacheAndFetchState.NO_DATA_CACHED_AND_SUCCESS -> ShowEmpty() // query returned null
-}
-```
-
 ### External Cache Updates Propagate
 
 Modifying the cache directly updates all active query/flow subscribers observing that key:
 
 ```kotlin
-val query = getUserFactory.create(GetUserInput("123"), viewModelScope)
+val query = getUserFactory(GetUserInput("123"), viewModelScope)
 
 // Somewhere else in the app
 cache[GetUserInput("123")] = User(name = "Updated externally")
@@ -459,6 +867,81 @@ infiniteQuery.fetchPage(FeedInput("trending"), page = 3)
 
 // If page 10 doesn't exist yet, it's appended
 infiniteQuery.fetchPage(FeedInput("trending"), page = 10)
+```
+
+### Stale-While-Revalidate
+
+Pass `startingCacheKey` when creating an instance to immediately read the cached value (if present) while the
+fresh fetch runs in the background. The result flow emits the cached data right away, then emits again when the
+fetch completes. Use `cachedDataState` to distinguish the two states:
+
+```kotlin
+val query = GetUser(
+    startingCacheKey = GetUserInput("123"), // reads cache synchronously on creation
+    coroutineScope = viewModelScope,
+    initialFetchState = FetchState.LOADING  // show LOADING state immediately
+)
+
+viewModelScope.launch {
+    query.result.collect { result ->
+        when (result.cachedDataState) {
+            CacheAndFetchState.DATA_CACHED_AND_LOADING -> showStaleDataWithSpinner(result.data)
+            CacheAndFetchState.DATA_CACHED_AND_SUCCESS -> showFreshData(result.data)
+            CacheAndFetchState.NO_DATA_CACHED_AND_LOADING -> showSkeleton()
+            CacheAndFetchState.DATA_CACHED_AND_ERROR -> showStaleDataWithError(result.data, result.error)
+            CacheAndFetchState.NO_DATA_CACHED_AND_ERROR -> showErrorScreen(result.error)
+            else -> { /* handle remaining states */
+            }
+        }
+    }
+
+    query.fetch(queryInput = GetUserInput("123"))
+}
+```
+
+### `cachedDataState` for UI
+
+`cachedDataState` is a convenience extension that combines cache presence with `fetchState` in a single enum,
+letting you drive UI with one `when` expression:
+
+```kotlin
+when (query.result.value.cachedDataState) {
+    CacheAndFetchState.NO_DATA_CACHED_AND_IDLE -> showEmpty()
+    CacheAndFetchState.NO_DATA_CACHED_AND_LOADING -> showSkeleton()
+    CacheAndFetchState.DATA_CACHED_AND_LOADING -> showDataWithRefreshIndicator(result.data)
+    CacheAndFetchState.DATA_CACHED_AND_SUCCESS -> showData(result.data)
+    CacheAndFetchState.DATA_CACHED_AND_ERROR -> showDataWithErrorBanner(result.data, result.error)
+    CacheAndFetchState.NO_DATA_CACHED_AND_ERROR -> showErrorScreen(result.error)
+    CacheAndFetchState.DATA_CACHED_AND_IDLE -> showData(result.data)
+    CacheAndFetchState.NO_DATA_CACHED_AND_SUCCESS -> showEmpty() // query returned null
+}
+```
+
+### Deduplication Interval
+
+Concurrent fetches for the same cache key within `dedupingInterval` share a single in-flight request — the
+second caller awaits the first rather than firing a duplicate network call. The default is `2.seconds`.
+
+Set to `null` to disable deduplication and always run a fresh fetch:
+
+```kotlin
+val GetUser = queryFactoryOf<GetUserInput, User, ApiException>(
+    cache = cache,
+    dedupingInterval = null // every call runs independently
+) { input ->
+    withContext(Dispatchers.IO) { api.getUser(input.id) }
+}
+```
+
+Reduce the window if your data changes frequently and stale joins are unacceptable:
+
+```kotlin
+val GetLiveScore = queryFactoryOf<MatchInput, Score, ApiException>(
+    cache = cache,
+    dedupingInterval = 500.milliseconds
+) { input ->
+    withContext(Dispatchers.IO) { api.getLiveScore(input.matchId) }
+}
 ```
 
 ### Forward-Only Pagination
@@ -478,7 +961,11 @@ val forwardOnlyFactory = infiniteQueryFactoryOf<MyInput, Int, Item, Exception>(
 
 ## Gotchas
 
-- **`fetch()` with a new key switches observation** — calling `fetch(newKey)` on an existing query instance changes which cache entry it observes. External updates to the old key will no longer propagate to that instance.
-- **Infinite query pages grow unbounded** — each `fetchNextPage`/`fetchPreviousPage` appends to the list. There's no built-in cap. Consider clearing and refetching periodically for long-lived infinite scrolls.
-- **Flow partial success** — if a flow emits values before throwing, the last successful emission remains cached. State shows ERROR with data still present (`DATA_CACHED_AND_ERROR`).
-- **Error state clears on next fetch** — calling `fetch()` again after an error resets the error and sets LOADING. No manual error clearing needed.
+- **`fetch()` with a new key switches observation** — calling `fetch(newKey)` on an existing query instance changes
+  which cache entry it observes. External updates to the old key will no longer propagate to that instance.
+- **Infinite query pages grow unbounded** — each `fetchNextPage`/`fetchPreviousPage` appends to the list. There's no
+  built-in cap. Consider clearing and refetching periodically for long-lived infinite scrolls.
+- **Flow partial success** — if a flow emits values before throwing, the last successful emission remains cached. State
+  shows ERROR with data still present (`DATA_CACHED_AND_ERROR`).
+- **Error state clears on next fetch** — calling `fetch()` again after an error resets the error and sets LOADING. No
+  manual error clearing needed.
